@@ -60,11 +60,24 @@ def target(tmp_path: Path) -> Path:
     return tmp_path
 
 
-def test_full_chain_renders_and_verifies(target: Path):
+def test_full_chain_renders_and_verifies(target: Path, capsys):
+    """Every artefact the contract implies gets rendered end-to-end - but
+    the notes fixture declares a write event with a truth validator, and
+    no renderer in this wave carries a truth validator into any generated
+    artefact (FIX 1). So the final gate must still refuse, naming exactly
+    that gap, rather than report "contract satisfied" over a write event
+    with no ground-truth re-query wired up anywhere."""
     assert main(["render", "all", "--contract", str(FIXTURE),
                  "--target", str(target)]) == 0
     assert main(["verify", "contract", "--contract", str(FIXTURE),
-                 "--target", str(target)]) == 0
+                 "--target", str(target)]) == 1
+
+    err = capsys.readouterr().err
+    assert "truth validator for 'notes.create'" in err
+    assert "carried by no generated artefact" in err
+    # Everything else the contract implies must be in order - the truth
+    # gap must be the *only* reported problem.
+    assert err.count("ERROR:") == 1
 
 
 def test_existing_space_survives_generation(target: Path):
@@ -89,7 +102,8 @@ def test_registry_comments_survive_generation(target: Path):
     """
     registry_path = target / "config" / "space_agent_registry.yml"
 
-    main(["render", "all", "--contract", str(FIXTURE), "--target", str(target)])
+    assert main(["render", "all", "--contract", str(FIXTURE),
+                 "--target", str(target)]) == 0
 
     text_after = registry_path.read_text(encoding="utf-8")
     # The whole original file, comments included, must still be a literal

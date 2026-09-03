@@ -60,6 +60,19 @@ class SpaceRuntime(BaseModel):
     healthz: str = "/healthz"
     start: str
 
+    @field_validator("healthz")
+    @classmethod
+    def _validate_healthz(cls, value: str) -> str:
+        if not value.startswith("/"):
+            raise ValueError(
+                f"runtime.healthz '{value}' must start with '/': "
+                f"it is rendered straight into "
+                f"@mcp.custom_route(healthz), and starlette's router "
+                f"raises AssertionError('Routed paths must start with "
+                f"\"/\"') at server load time otherwise"
+            )
+        return value
+
 
 class SpaceContract(BaseModel):
     id: str
@@ -111,6 +124,17 @@ class SpaceContract(BaseModel):
                 raise ValueError(
                     f"event '{event_name}' points at unknown tool "
                     f"'{event.tool}'"
+                )
+            unknown_params = [
+                p for p in event.required_params if p not in tool.params
+            ]
+            if unknown_params:
+                raise ValueError(
+                    f"event '{event_name}' declares required_params "
+                    f"{unknown_params} that are not params of tool "
+                    f"'{event.tool}' (tool params: {tool.params}) - this "
+                    f"would land in the registry as a routing requirement "
+                    f"the tool can never satisfy"
                 )
             if tool.side_effect == "write":
                 if not event.required_provenance:

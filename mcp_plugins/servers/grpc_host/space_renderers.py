@@ -311,10 +311,19 @@ URL = f"http://127.0.0.1:{{PORT}}{contract.runtime.healthz}"
 
 
 def test_status_probe_answers():
-    """Skips when the space is not running; fails when it answers wrongly."""
+    """Skips when the space is unreachable; fails when it answers with
+    anything but 200, including an HTTP error response."""
     try:
         with urllib.request.urlopen(URL, timeout=3) as response:
             assert response.status == 200
+    except urllib.error.HTTPError as exc:
+        # HTTPError is a URLError subclass, so it must be caught first: the
+        # server is up and answering, just with an error status - a real
+        # failure, not "not running", and must not be swallowed as a skip.
+        pytest.fail(
+            f"{sid} status probe at {{URL}} answered HTTP {{exc.code}}: "
+            f"{{exc.reason}}"
+        )
     except urllib.error.URLError as exc:
         pytest.skip(f"{sid} space not running on {{PORT}}: {{exc}}")
 '''

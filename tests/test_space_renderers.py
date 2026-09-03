@@ -182,6 +182,30 @@ def test_rendered_space_tests_are_valid_python():
         assert tests, f"{filename} contains no test function"
 
 
+def test_status_test_fails_on_http_error_not_just_skips():
+    """FIX 3: urllib.error.HTTPError subclasses URLError, and urlopen only
+    returns for a 2xx status - so a bare `except URLError: skip` (with an
+    unreachable `assert response.status == 200` below it) means a live
+    server answering 500 is misreported as "not running" and the test can
+    only ever pass or skip, never fail. The rendered template must catch
+    HTTPError ahead of URLError and fail on it, mirroring the fix already
+    applied to space_cli._verify_status."""
+    from mcp_plugins.servers.grpc_host.space_renderers import render_space_tests
+
+    source = render_space_tests(load_contract(FIXTURE))["test_notes_status.py"]
+
+    assert "urllib.error.HTTPError" in source
+    assert "pytest.fail" in source
+    # HTTPError is-a URLError, so its except clause must appear first in
+    # source order to actually be reached.
+    http_idx = source.index("except urllib.error.HTTPError")
+    url_idx = source.index("except urllib.error.URLError")
+    assert http_idx < url_idx
+
+    import ast
+    ast.parse(source)  # still renders to valid python
+
+
 def test_registry_test_asserts_mcp_tools_present():
     """The generated test must catch the toolless-agent trap."""
     from mcp_plugins.servers.grpc_host.space_renderers import (

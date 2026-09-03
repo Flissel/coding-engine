@@ -96,6 +96,43 @@ def test_write_tool_needs_at_least_one_event():
         SpaceContract(**raw)
 
 
+def test_required_params_outside_tool_params_is_rejected():
+    """FIX 4: required_params: [titel, nonexistent] against a tool whose
+    real params are [title, body] used to validate cleanly, then land in
+    the live registry as a routing requirement the tool can never satisfy."""
+    raw = _read_only_contract()
+    raw["events"]["notes.list"]["required_params"] = ["titel", "nonexistent"]
+    with pytest.raises(ValidationError, match="required_params"):
+        SpaceContract(**raw)
+
+
+def test_required_params_within_tool_params_is_accepted():
+    raw = _read_only_contract()
+    raw["tools"].append({"name": "notes_get", "params": ["id"],
+                         "returns": {"item": "object"}, "side_effect": "read"})
+    raw["events"]["notes.get"] = {"tool": "notes_get", "required_params": ["id"]}
+    contract = SpaceContract(**raw)
+    assert contract.events["notes.get"].required_params == ["id"]
+
+
+def test_healthz_without_leading_slash_is_rejected():
+    """FIX 5: healthz: "not-a-path" used to validate, then render straight
+    into @mcp.custom_route("not-a-path") - and starlette refuses to load
+    the generated server with AssertionError('Routed paths must start
+    with "/"')."""
+    raw = _read_only_contract()
+    raw["runtime"]["healthz"] = "not-a-path"
+    with pytest.raises(ValidationError, match="must start with"):
+        SpaceContract(**raw)
+
+
+def test_healthz_with_leading_slash_is_accepted():
+    raw = _read_only_contract()
+    raw["runtime"]["healthz"] = "/custom/healthz"
+    contract = SpaceContract(**raw)
+    assert contract.runtime.healthz == "/custom/healthz"
+
+
 def test_hyphenated_id_is_rejected():
     """Hyphens make f"{sid}-{suffix}" task ids ambiguous (sales +
     verify-tests collides with sales-verify + tests) and are unusable in

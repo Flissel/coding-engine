@@ -1,0 +1,27 @@
+# Read-only counterpart to space_notes_contract.yaml: no write tool, so no
+# event declares a truth validator. Used to prove that verify contract can
+# still report a genuine full pass once the truth-carrier check (FIX 1)
+# exists - the write-event fixture can never pass that check until a later
+# wave adds a renderer that actually carries truth validators downstream.
+id: notesview
+description: "Read-only view over notes, with no write path at all."
+prefixes: [notesview.]
+
+tools:
+  - name: notesview_list
+    params: []
+    returns: {items: array}
+    side_effect: read
+
+events:
+  notesview.list:
+    tool: notesview_list
+    required_params: []
+
+ui:
+  embed: none
+
+runtime:
+  port: 8141
+  healthz: "/healthz"
+  start: "python -m spaces.notesview.server"

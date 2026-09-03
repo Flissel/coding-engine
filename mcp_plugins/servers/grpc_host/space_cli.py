@@ -12,7 +12,7 @@ import sys
 import urllib.error
 import urllib.request
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 import yaml
 
@@ -80,6 +80,27 @@ def _render_registry(target: Path, contract: SpaceContract) -> int:
         )
         return 1
 
+    # A second space claiming a prefix an existing space already owns would
+    # silently win the routing lookup: bindings_registry builds a plain
+    # prefix -> binding dict, and the later insertion always overwrites the
+    # earlier one. Refuse before writing anything, rather than let the new
+    # space steal traffic meant for the old one.
+    claimed_by: Dict[str, str] = {}
+    for other_id, other_entry in spaces.items():
+        if not isinstance(other_entry, dict):
+            continue
+        for prefix in other_entry.get("prefixes") or []:
+            claimed_by.setdefault(prefix, other_id)
+    for prefix in contract.prefixes:
+        if prefix in claimed_by:
+            print(
+                f"ERROR: prefix '{prefix}' is already claimed by space "
+                f"'{claimed_by[prefix]}' in {registry_path} - refusing to "
+                f"register '{contract.id}' with a colliding prefix",
+                file=sys.stderr,
+            )
+            return 1
+
     fragment = render_registry_entry(contract)
     text = original_text
     if not text.endswith("\n"):
@@ -93,8 +114,19 @@ def _render_registry(target: Path, contract: SpaceContract) -> int:
     try:
         written = yaml.safe_load(registry_path.read_text(encoding="utf-8")) or {}
         entry = (written.get("spaces") or {}).get(contract.id)
-        landed = entry is not None and entry.get("agent") == contract.agent_name
-    except yaml.YAMLError:
+        # isinstance guard, not just `entry is not None`: a mis-nested
+        # append can land contract.id on a scalar or list rather than a
+        # mapping, and entry.get(...) on that raises AttributeError - which
+        # must count as "did not land", not propagate past the rollback.
+        landed = isinstance(entry, dict) and entry.get("agent") == contract.agent_name
+    except Exception:
+        # Anything going wrong while re-reading the just-written file - a
+        # transient OSError, malformed YAML, or the AttributeError above if
+        # the guard above were ever bypassed - means we cannot confirm the
+        # insertion landed correctly. Treat that the same as "did not
+        # land" so the rollback below always runs; propagating here would
+        # leave the shared registry in whatever half-written state the
+        # append produced.
         landed = False
 
     if not landed:
@@ -213,6 +245,38 @@ def _verify_contract(target: Path, contract: SpaceContract) -> int:
     for name in render_space_tests(contract):
         if not (tests_dir / name).is_file():
             problems.append(f"test missing: {tests_dir / name}")
+
+    # A write event without a truth validator is refused at contract-load
+    # time (space_contract.py's fail-closed rule), but validating the
+    # contract is not the same as the validator actually existing anywhere
+    # downstream: no renderer emits one yet. Without this check, a write
+    # event's ground-truth re-query silently never happens while every
+    # other gate reports green. Filling this in properly (a capabilities
+    # entry per truth kind) is later-wave work; this only makes the gap
+    # loud instead of silent.
+    truth_events = {
+        name: event.truth for name, event in contract.events.items()
+        if event.truth is not None
+    }
+    if truth_events:
+        artefact_texts: List[str] = []
+        for path in (registry_path, manifest_path, server_path):
+            if path.is_file():
+                artefact_texts.append(path.read_text(encoding="utf-8"))
+        if tests_dir.is_dir():
+            for test_file in sorted(tests_dir.glob("*.py")):
+                artefact_texts.append(test_file.read_text(encoding="utf-8"))
+        combined = "\n".join(artefact_texts)
+        for name, truth in truth_events.items():
+            if truth.kind not in combined:
+                problems.append(
+                    f"truth validator for '{name}' is declared in the "
+                    f"contract but carried by no generated artefact - "
+                    f"this is a known wave-1 limitation (no renderer "
+                    f"emits truth validators yet, so the write event "
+                    f"would route with no ground-truth re-query), not a "
+                    f"sign of a corrupted space"
+                )
 
     if problems:
         for problem in problems:
