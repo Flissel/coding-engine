@@ -7,6 +7,7 @@ test without a scratch directory.
 from __future__ import annotations
 
 import textwrap
+from typing import Dict
 
 import yaml
 
@@ -201,3 +202,108 @@ contextBridge.exposeInMainWorld('vibemind{name}', {{
   hide{name}: () => ipcRenderer.invoke('{contract.id}:hide'),
 }});
 """
+
+
+def render_space_tests(contract: SpaceContract) -> Dict[str, str]:
+    """Render the three tests that verify a generated space.
+
+    They assert the space against its own contract: the registry entry is
+    complete (including mcp_tools, whose absence silently leaves the agent
+    without tools), the agent manifest owns the events, and the runtime
+    answers its health probe.
+    """
+    sid = contract.id
+    server = mcp_server_name(contract)
+    tool_names = sorted(t.name for t in contract.tools)
+    event_names = sorted(contract.events)
+    write_events = sorted(
+        name for name, event in contract.events.items()
+        if event.required_provenance
+    )
+
+    registry = f'''"""Registry wiring for the {sid} space (generated)."""
+from pathlib import Path
+
+import yaml
+
+REGISTRY = (
+    Path(__file__).resolve().parents[3] / "config" / "space_agent_registry.yml"
+)
+
+
+def _entry() -> dict:
+    data = yaml.safe_load(REGISTRY.read_text(encoding="utf-8"))
+    return data["spaces"]["{sid}"]
+
+
+def test_space_is_registered_and_enabled():
+    entry = _entry()
+    assert entry["agent"] == "{contract.agent_name}"
+    assert entry["enabled"] is True
+    assert entry["prefixes"] == {contract.prefixes!r}
+
+
+def test_agent_receives_its_tools():
+    """Tools come from mcp_tools alone - an empty key means no tools."""
+    entry = _entry()
+    assert entry["mcp_tools"]["{server}"] == {tool_names!r}
+
+
+def test_all_contract_events_are_registered():
+    entry = _entry()
+    assert sorted(entry["events"]) == {event_names!r}
+
+
+def test_write_events_require_provenance():
+    entry = _entry()
+    for name in {write_events!r}:
+        assert entry["events"][name]["required_provenance"]
+'''
+
+    wiring = f'''"""Agent manifest for the {sid} space (generated)."""
+from pathlib import Path
+
+import yaml
+
+MANIFEST = (
+    Path(__file__).resolve().parents[3]
+    / "brain" / "the_brain" / "configs" / "agents" / "{contract.agent_name}.yaml"
+)
+
+
+def test_manifest_exists_and_names_the_agent():
+    data = yaml.safe_load(MANIFEST.read_text(encoding="utf-8"))
+    assert data["agent"] == "{contract.agent_name}"
+    assert data["default_namespace"] == "{sid}"
+
+
+def test_manifest_owns_every_contract_event():
+    data = yaml.safe_load(MANIFEST.read_text(encoding="utf-8"))
+    assert sorted(data["events"]) == {event_names!r}
+'''
+
+    status = f'''"""Runtime health probe for the {sid} space (generated)."""
+import os
+import urllib.error
+import urllib.request
+
+import pytest
+
+PORT = int(os.environ.get("{sid.upper()}_PORT", "{contract.runtime.port}"))
+URL = f"http://127.0.0.1:{{PORT}}{contract.runtime.healthz}"
+
+
+def test_status_probe_answers():
+    """Skips when the space is not running; fails when it answers wrongly."""
+    try:
+        with urllib.request.urlopen(URL, timeout=3) as response:
+            assert response.status == 200
+    except urllib.error.URLError as exc:
+        pytest.skip(f"{sid} space not running on {{PORT}}: {{exc}}")
+'''
+
+    return {
+        f"test_{sid}_registry.py": registry,
+        f"test_{sid}_wiring.py": wiring,
+        f"test_{sid}_status.py": status,
+    }

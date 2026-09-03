@@ -154,3 +154,40 @@ def test_electron_renderers_skip_spaces_without_ui():
     )
     assert render_electron_manager(headless) == ""
     assert render_electron_preload(headless) == ""
+
+
+def test_space_tests_cover_registry_wiring_and_status():
+    from mcp_plugins.servers.grpc_host.space_renderers import (
+        render_space_tests,
+    )
+
+    rendered = render_space_tests(load_contract(FIXTURE))
+    assert set(rendered) == {
+        "test_notes_registry.py",
+        "test_notes_wiring.py",
+        "test_notes_status.py",
+    }
+
+
+def test_rendered_space_tests_are_valid_python():
+    import ast
+    from mcp_plugins.servers.grpc_host.space_renderers import (
+        render_space_tests,
+    )
+
+    for filename, source in render_space_tests(load_contract(FIXTURE)).items():
+        tree = ast.parse(source)
+        tests = [n.name for n in ast.walk(tree)
+                 if isinstance(n, ast.FunctionDef) and n.name.startswith("test_")]
+        assert tests, f"{filename} contains no test function"
+
+
+def test_registry_test_asserts_mcp_tools_present():
+    """The generated test must catch the toolless-agent trap."""
+    from mcp_plugins.servers.grpc_host.space_renderers import (
+        render_space_tests,
+    )
+
+    source = render_space_tests(load_contract(FIXTURE))["test_notes_registry.py"]
+    assert "mcp_tools" in source
+    assert "notes_create" in source
