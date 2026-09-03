@@ -28,7 +28,7 @@ def test_registry_entry_lists_mcp_tools_not_just_servers():
     entry = _entry()
     assert entry["mcp_servers"] == ["spaces-notes"]
     assert entry["mcp_tools"] == {
-        "spaces-notes": ["notes_list", "notes_create"]
+        "spaces-notes": ["notes_create", "notes_list"]
     }
 
 

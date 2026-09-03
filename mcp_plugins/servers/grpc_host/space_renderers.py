@@ -26,7 +26,11 @@ def render_registry_entry(contract: SpaceContract) -> str:
     under the file's top-level `spaces:` key.
     """
     server = mcp_server_name(contract)
-    tool_names = [t.name for t in contract.tools]
+    # Sorted, not declaration order: two contracts with the same tools must
+    # produce the same registry regardless of how they happen to list them
+    # (this also keeps it consistent with render_space_tests, which asserts
+    # sorted order).
+    tool_names = sorted(t.name for t in contract.tools)
 
     events: dict = {}
     for name, event in contract.events.items():
@@ -106,6 +110,8 @@ def render_mcp_server(contract: SpaceContract) -> str:
         "from typing import Any, Dict",
         "",
         "from mcp.server.fastmcp import FastMCP",
+        "from starlette.requests import Request",
+        "from starlette.responses import JSONResponse",
         "",
         'HOST = os.environ.get("%s_HOST", "127.0.0.1")' % contract.id.upper(),
         'PORT = int(os.environ.get("%s_PORT", "%d"))'
@@ -116,8 +122,19 @@ def render_mcp_server(contract: SpaceContract) -> str:
         "",
         "@mcp.tool()",
         "def healthz() -> Dict[str, Any]:",
-        '    """Liveness probe used by the space status check."""',
+        '    """Liveness probe used by the space status check (MCP-tool form)."""',
         '    return {"ok": True, "space": "%s"}' % contract.id,
+        "",
+        "",
+        # FastMCP only mounts /sse and /messages/ on the transport it runs;
+        # @mcp.tool() alone is an MCP-protocol call, not an HTTP route, so a
+        # plain GET against contract.runtime.healthz would 404. This route
+        # is what actually answers that path over HTTP.
+        '@mcp.custom_route("%s", methods=["GET"])' % contract.runtime.healthz,
+        "async def healthz_http(request: Request) -> JSONResponse:",
+        '    """HTTP liveness probe at %s (used by the status check test)."""'
+        % contract.runtime.healthz,
+        '    return JSONResponse({"ok": True, "space": "%s"})' % contract.id,
         "",
     ]
 
