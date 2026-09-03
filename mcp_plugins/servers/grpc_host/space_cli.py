@@ -49,13 +49,29 @@ def _write(path: Path, content: str) -> None:
 
 
 def _render_registry(target: Path, contract: SpaceContract) -> int:
+    """Insert the contract's entry into config/space_agent_registry.yml.
+
+    The insertion is a raw textual append under the assumption that
+    `spaces:` is the last top-level block in the file - deliberately, since
+    a parse-and-rewrite would destroy the comments the real registry
+    carries. That assumption does not always hold (no `spaces:` key at all,
+    or another top-level key after the spaces block), so every append is
+    checked afterwards and rolled back if it did not land where expected.
+    """
     registry_path = target / REGISTRY_REL
     if not registry_path.is_file():
         print(f"ERROR: registry not found: {registry_path}", file=sys.stderr)
         return 1
 
-    data = yaml.safe_load(registry_path.read_text(encoding="utf-8")) or {}
-    spaces = data.get("spaces") or {}
+    original_text = registry_path.read_text(encoding="utf-8")
+    data = yaml.safe_load(original_text) or {}
+    spaces = data.get("spaces")
+    if not isinstance(spaces, dict):
+        print(
+            f"ERROR: registry has no 'spaces' mapping: {registry_path}",
+            file=sys.stderr,
+        )
+        return 1
     if contract.id in spaces:
         print(
             f"ERROR: space '{contract.id}' already registered - refusing to "
@@ -65,10 +81,33 @@ def _render_registry(target: Path, contract: SpaceContract) -> int:
         return 1
 
     fragment = render_registry_entry(contract)
-    text = registry_path.read_text(encoding="utf-8")
+    text = original_text
     if not text.endswith("\n"):
         text += "\n"
     registry_path.write_text(text + fragment, encoding="utf-8")
+
+    # Verify the append actually landed under `spaces:` rather than trusting
+    # the textual append blindly - it silently mis-nests when a top-level
+    # key follows the spaces block, or produces broken YAML when there was
+    # no `spaces:` key to begin with.
+    try:
+        written = yaml.safe_load(registry_path.read_text(encoding="utf-8")) or {}
+        entry = (written.get("spaces") or {}).get(contract.id)
+        landed = entry is not None and entry.get("agent") == contract.agent_name
+    except yaml.YAMLError:
+        landed = False
+
+    if not landed:
+        registry_path.write_text(original_text, encoding="utf-8")
+        print(
+            f"ERROR: registry insertion for '{contract.id}' did not land "
+            f"under 'spaces:' in {registry_path} (original file restored) "
+            f"- the append assumes 'spaces:' is the last top-level block, "
+            f"which does not hold here",
+            file=sys.stderr,
+        )
+        return 1
+
     print(f"registered '{contract.id}' in {registry_path}")
     return 0
 
@@ -137,6 +176,24 @@ def _verify_contract(target: Path, contract: SpaceContract) -> int:
                 )
             if sorted(entry.get("events") or {}) != sorted(contract.events):
                 problems.append("registry events do not match the contract")
+            if entry.get("agent") != contract.agent_name:
+                problems.append(
+                    f"registry agent mismatch: {entry.get('agent')!r} != "
+                    f"{contract.agent_name!r}"
+                )
+            if list(entry.get("prefixes") or []) != list(contract.prefixes):
+                problems.append(
+                    f"registry prefixes mismatch: "
+                    f"{entry.get('prefixes')!r} != {contract.prefixes!r}"
+                )
+            entry_events = entry.get("events") or {}
+            for name, event in contract.events.items():
+                bound = (entry_events.get(name) or {}).get("tool")
+                if bound != event.tool:
+                    problems.append(
+                        f"event '{name}' bound to tool {bound!r} in "
+                        f"registry, contract expects {event.tool!r}"
+                    )
 
     manifest_path = _manifest_path(target, contract)
     if not manifest_path.is_file():
@@ -189,6 +246,13 @@ def _verify_status(target: Path, contract: SpaceContract) -> int:
                 print(f"ERROR: {url} answered {response.status}",
                       file=sys.stderr)
                 return 1
+    except urllib.error.HTTPError as exc:
+        # HTTPError is a URLError subclass, so it must be caught first: the
+        # server is up and answering, just with an error status - a
+        # different failure than "not running" and worth telling apart.
+        print(f"ERROR: {url} answered HTTP {exc.code}: {exc.reason}",
+              file=sys.stderr)
+        return 1
     except urllib.error.URLError as exc:
         print(f"ERROR: {url} unreachable: {exc}", file=sys.stderr)
         return 1

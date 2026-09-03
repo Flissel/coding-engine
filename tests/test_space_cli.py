@@ -55,6 +55,47 @@ def test_render_all_writes_every_artefact(tmp_path):
             / "test_notes_registry.py").is_file()
 
 
+def test_render_registry_refuses_when_registry_has_no_spaces_key(tmp_path):
+    """A registry without a `spaces:` mapping must not be appended to."""
+    target = _target(tmp_path)
+    registry_path = target / "config" / "space_agent_registry.yml"
+    registry_path.write_text("version: 1\n", encoding="utf-8")
+
+    code = main(["render", "registry", "--contract", str(FIXTURE),
+                 "--target", str(target)])
+    assert code == 1
+
+    # the registry is untouched and still parsable
+    data = yaml.safe_load(registry_path.read_text(encoding="utf-8"))
+    assert data == {"version": 1}
+
+
+def test_render_registry_refuses_when_a_key_follows_the_spaces_block(tmp_path):
+    """A raw textual append mis-nests under a top-level key that follows
+    `spaces:` - this must be caught and rolled back, not silently succeed
+    with the space unregistered."""
+    target = _target(tmp_path)
+    registry_path = target / "config" / "space_agent_registry.yml"
+    registry_path.write_text(
+        "version: 1\n"
+        "spaces:\n"
+        "  existing:\n"
+        "    agent: brain-existing\n"
+        "metadata:\n"
+        "  owner: ops\n",
+        encoding="utf-8",
+    )
+
+    code = main(["render", "registry", "--contract", str(FIXTURE),
+                 "--target", str(target)])
+    assert code == 1
+
+    # the registry is rolled back to its original content and still parses
+    data = yaml.safe_load(registry_path.read_text(encoding="utf-8"))
+    assert "notes" not in data["spaces"]
+    assert data["metadata"] == {"owner": "ops"}
+
+
 def test_verify_contract_fails_when_artefacts_are_missing(tmp_path):
     target = _target(tmp_path)
     assert main(["verify", "contract", "--contract", str(FIXTURE),
