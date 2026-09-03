@@ -1,0 +1,38 @@
+# Example contract used by the renderer and planner tests. It exercises both
+# sides deliberately: one read tool without obligations, one write tool with
+# the full provenance and ground-truth requirements.
+id: notes
+description: "Short notes with titles, listed and created from the canvas."
+prefixes: [notes.]
+
+tools:
+  - name: notes_list
+    params: []
+    returns: {items: array}
+    side_effect: read
+  - name: notes_create
+    params: [title, body]
+    returns: {id: string}
+    side_effect: write
+
+events:
+  notes.list:
+    tool: notes_list
+    required_params: []
+  notes.create:
+    tool: notes_create
+    required_params: [title]
+    required_provenance: [approval_ref, cost_ref]
+    truth:
+      kind: "truth:supabase_row"
+      table: notes
+      expect: present
+
+ui:
+  embed: browserview
+  entry_url: "http://127.0.0.1:8140/"
+
+runtime:
+  port: 8140
+  healthz: "/healthz"
+  start: "python -m spaces.notes.server"

@@ -111,3 +111,20 @@ def test_load_contract_raises_contract_error_on_missing_file(tmp_path):
 
     with pytest.raises(ContractError, match="not found"):
         load_contract(tmp_path / "nope.yaml")
+
+
+def test_bundled_fixture_contract_validates():
+    """The fixture the renderer tests build on must itself be valid."""
+    from pathlib import Path
+    from mcp_plugins.servers.grpc_host.space_contract import load_contract
+
+    path = Path(__file__).parent / "fixtures" / "space_notes_contract.yaml"
+    contract = load_contract(path)
+
+    assert contract.id == "notes"
+    assert contract.agent_name == "brain-notes"
+    assert contract.ui.embed == "browserview"
+    assert {t.name for t in contract.tools} == {"notes_list", "notes_create"}
+    create = contract.events["notes.create"]
+    assert create.required_provenance == ["approval_ref", "cost_ref"]
+    assert create.truth is not None
