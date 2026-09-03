@@ -138,3 +138,66 @@ def render_mcp_server(contract: SpaceContract) -> str:
         "",
     ]
     return "\n".join(lines)
+
+
+def _camel(space_id: str) -> str:
+    """notes -> Notes, my_space -> MySpace."""
+    return "".join(part.capitalize() for part in space_id.replace("-", "_").split("_"))
+
+
+def render_electron_manager(contract: SpaceContract) -> str:
+    """Render voice/electron-app/<id>-manager.js.
+
+    Returns an empty string for headless spaces, so the caller can simply
+    skip writing the file.
+    """
+    if contract.ui.embed == "none":
+        return ""
+
+    name = _camel(contract.id)
+    return f"""// {contract.id}-manager.js - generated from the space contract.
+// Embeds the {contract.id} space as a BrowserView in the main window.
+const {{ BrowserView }} = require('electron');
+
+const ENTRY_URL = '{contract.ui.entry_url}';
+
+let view = null;
+
+function show{name}(mainWindow) {{
+  if (!view) {{
+    view = new BrowserView({{
+      webPreferences: {{ contextIsolation: true, nodeIntegration: false }},
+    }});
+    view.webContents.loadURL(ENTRY_URL);
+  }}
+  mainWindow.addBrowserView(view);
+  const {{ width, height }} = mainWindow.getContentBounds();
+  view.setBounds({{ x: 0, y: 0, width, height }});
+  view.setAutoResize({{ width: true, height: true }});
+  return view;
+}}
+
+function hide{name}(mainWindow) {{
+  if (view) {{
+    mainWindow.removeBrowserView(view);
+  }}
+}}
+
+module.exports = {{ show{name}, hide{name} }};
+"""
+
+
+def render_electron_preload(contract: SpaceContract) -> str:
+    """Render voice/electron-app/<id>-preload.js."""
+    if contract.ui.embed == "none":
+        return ""
+
+    name = _camel(contract.id)
+    return f"""// {contract.id}-preload.js - generated from the space contract.
+const {{ contextBridge, ipcRenderer }} = require('electron');
+
+contextBridge.exposeInMainWorld('vibemind{name}', {{
+  show{name}: () => ipcRenderer.invoke('{contract.id}:show'),
+  hide{name}: () => ipcRenderer.invoke('{contract.id}:hide'),
+}});
+"""

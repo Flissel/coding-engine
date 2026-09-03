@@ -116,3 +116,41 @@ def test_mcp_server_scaffold_binds_contract_port():
     source = render_mcp_server(load_contract(FIXTURE))
     assert "8140" in source
     assert "spaces-notes" in source
+
+
+def test_electron_manager_exposes_show_and_hide():
+    from mcp_plugins.servers.grpc_host.space_renderers import (
+        render_electron_manager,
+    )
+
+    source = render_electron_manager(load_contract(FIXTURE))
+    assert "showNotes" in source
+    assert "hideNotes" in source
+    assert "BrowserView" in source
+    assert "http://127.0.0.1:8140/" in source
+
+
+def test_electron_preload_bridges_show_and_hide():
+    from mcp_plugins.servers.grpc_host.space_renderers import (
+        render_electron_preload,
+    )
+
+    source = render_electron_preload(load_contract(FIXTURE))
+    assert "contextBridge" in source
+    assert "showNotes" in source
+    assert "hideNotes" in source
+
+
+def test_electron_renderers_skip_spaces_without_ui():
+    from mcp_plugins.servers.grpc_host.space_contract import SpaceContract
+    from mcp_plugins.servers.grpc_host.space_renderers import (
+        render_electron_manager,
+        render_electron_preload,
+    )
+
+    contract = load_contract(FIXTURE)
+    headless = SpaceContract(
+        **{**contract.model_dump(), "ui": {"embed": "none"}}
+    )
+    assert render_electron_manager(headless) == ""
+    assert render_electron_preload(headless) == ""
