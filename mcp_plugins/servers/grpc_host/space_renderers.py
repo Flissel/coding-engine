@@ -62,3 +62,24 @@ def render_registry_entry(contract: SpaceContract) -> str:
     body = yaml.safe_dump(entry, sort_keys=False, allow_unicode=True,
                           default_flow_style=False)
     return textwrap.indent(body, "  ")
+
+
+def render_agent_manifest(contract: SpaceContract) -> str:
+    """Render brain/the_brain/configs/agents/brain-<id>.yaml.
+
+    Shape follows the existing brain-video.yaml: the agent owns every event
+    in its namespace, and the notes block records where the wiring lives.
+    """
+    manifest = {
+        "agent": contract.agent_name,
+        "description": contract.description,
+        "default_namespace": contract.id,
+        "events": sorted(contract.events),
+        "notes": (
+            f"{contract.agent_name} owns all {contract.id}.* events. Tool "
+            f"bindings live in config/space_agent_registry.yml, not here. "
+            f"Generated from the space contract."
+        ),
+    }
+    return yaml.safe_dump(manifest, sort_keys=False, allow_unicode=True,
+                          default_flow_style=False)

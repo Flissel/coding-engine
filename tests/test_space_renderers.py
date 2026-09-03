@@ -51,3 +51,28 @@ def test_registry_fragment_is_indented_for_insertion():
     contract = load_contract(FIXTURE)
     fragment = render_registry_entry(contract)
     assert fragment.startswith("  notes:")
+
+
+def test_agent_manifest_matches_brain_video_shape():
+    from mcp_plugins.servers.grpc_host.space_renderers import (
+        render_agent_manifest,
+    )
+
+    contract = load_contract(FIXTURE)
+    manifest = yaml.safe_load(render_agent_manifest(contract))
+
+    assert manifest["agent"] == "brain-notes"
+    assert manifest["default_namespace"] == "notes"
+    assert manifest["events"] == ["notes.create", "notes.list"]
+    assert manifest["description"] == contract.description
+    assert "notes" in manifest
+
+
+def test_agent_manifest_events_are_sorted():
+    from mcp_plugins.servers.grpc_host.space_renderers import (
+        render_agent_manifest,
+    )
+
+    contract = load_contract(FIXTURE)
+    manifest = yaml.safe_load(render_agent_manifest(contract))
+    assert manifest["events"] == sorted(manifest["events"])
