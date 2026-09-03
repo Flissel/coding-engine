@@ -1,0 +1,133 @@
+"""Space contract — the single source of truth about a VibeMind space.
+
+A space is not a directory of code but a set of artefacts across Brain,
+OpenFang, Electron and operations. This module describes that shape and
+rejects anything incomplete, so nothing downstream has to guess.
+
+Validation is fail-closed by design: a write operation without provenance
+or without a ground-truth check is refused here, before a single file is
+generated.
+"""
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Dict, List, Literal, Optional
+
+import yaml
+from pydantic import BaseModel, Field, model_validator
+
+
+class ContractError(ValueError):
+    """Raised when a contract cannot be read at all."""
+
+
+class SpaceTool(BaseModel):
+    name: str
+    params: List[str] = Field(default_factory=list)
+    returns: Dict[str, str] = Field(default_factory=dict)
+    side_effect: Literal["read", "write"]
+
+
+class SpaceTruth(BaseModel):
+    kind: str
+    table: Optional[str] = None
+    expect: Optional[str] = None
+
+
+class SpaceEvent(BaseModel):
+    tool: str
+    required_params: List[str] = Field(default_factory=list)
+    required_provenance: List[str] = Field(default_factory=list)
+    truth: Optional[SpaceTruth] = None
+
+
+class SpaceUI(BaseModel):
+    embed: Literal["browserview", "none"] = "none"
+    entry_url: Optional[str] = None
+
+
+class SpaceRuntime(BaseModel):
+    port: int
+    healthz: str = "/healthz"
+    start: str
+
+
+class SpaceContract(BaseModel):
+    id: str
+    description: str
+    prefixes: List[str]
+    tools: List[SpaceTool]
+    events: Dict[str, SpaceEvent]
+    ui: SpaceUI
+    runtime: SpaceRuntime
+
+    @property
+    def agent_name(self) -> str:
+        return f"brain-{self.id}"
+
+    def tool_by_name(self, name: str) -> Optional[SpaceTool]:
+        for tool in self.tools:
+            if tool.name == name:
+                return tool
+        return None
+
+    @model_validator(mode="after")
+    def _check_consistency(self) -> "SpaceContract":
+        names = [t.name for t in self.tools]
+        duplicates = {n for n in names if names.count(n) > 1}
+        if duplicates:
+            raise ValueError(f"duplicate tool names: {sorted(duplicates)}")
+
+        for event_name, event in self.events.items():
+            if not any(event_name.startswith(p) for p in self.prefixes):
+                raise ValueError(
+                    f"event '{event_name}' does not start with any declared "
+                    f"prefix {self.prefixes}"
+                )
+            tool = self.tool_by_name(event.tool)
+            if tool is None:
+                raise ValueError(
+                    f"event '{event_name}' points at unknown tool "
+                    f"'{event.tool}'"
+                )
+            if tool.side_effect == "write":
+                if not event.required_provenance:
+                    raise ValueError(
+                        f"event '{event_name}' writes but declares no "
+                        f"required_provenance"
+                    )
+                if event.truth is None:
+                    raise ValueError(
+                        f"event '{event_name}' writes but declares no truth "
+                        f"validator"
+                    )
+
+        wired = {e.tool for e in self.events.values()}
+        for tool in self.tools:
+            if tool.side_effect == "write" and tool.name not in wired:
+                raise ValueError(
+                    f"write tool '{tool.name}' has no event bound to it"
+                )
+
+        if self.ui.embed == "browserview" and not self.ui.entry_url:
+            raise ValueError("ui.embed=browserview requires ui.entry_url")
+
+        return self
+
+
+def load_contract(path: Path) -> SpaceContract:
+    """Read and validate a contract from YAML.
+
+    Raises ContractError if the file is unreadable, and pydantic's
+    ValidationError if the content violates the contract rules.
+    """
+    path = Path(path)
+    if not path.is_file():
+        raise ContractError(f"contract not found: {path}")
+    try:
+        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except yaml.YAMLError as exc:
+        raise ContractError(f"contract is not valid YAML: {exc}") from exc
+    if not isinstance(raw, dict):
+        raise ContractError(f"contract must be a mapping, got {type(raw)}")
+    return SpaceContract(**raw)
