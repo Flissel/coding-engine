@@ -71,3 +71,33 @@ def test_output_files_are_declared():
     assert tasks["space_manifest"].output_files == [
         "brain/the_brain/configs/agents/brain-notes.yaml"
     ]
+
+
+def test_every_planned_task_type_is_resolvable():
+    """A planned type without a mapping entry would fail at runtime."""
+    from mcp_plugins.servers.grpc_host.task_executor import (
+        TASK_SKILL_MAPPING,
+        VERIFICATION_COMMANDS,
+    )
+
+    for task in _tasks():
+        assert task.type in TASK_SKILL_MAPPING, f"unmapped type: {task.type}"
+        agent, skill, claude_agent, max_turns = TASK_SKILL_MAPPING[task.type]
+        if agent == "BashExecutor":
+            assert task.type in VERIFICATION_COMMANDS, (
+                f"BashExecutor type without command: {task.type}"
+            )
+            assert skill is None and claude_agent is None
+
+
+def test_verify_space_commands_do_not_call_a_model():
+    from mcp_plugins.servers.grpc_host.task_executor import (
+        TASK_SKILL_MAPPING,
+    )
+
+    for task_type in ("verify_space_contract", "verify_space_tests",
+                      "verify_space_status"):
+        agent, skill, claude_agent, _ = TASK_SKILL_MAPPING[task_type]
+        assert agent == "BashExecutor"
+        assert skill is None
+        assert claude_agent is None

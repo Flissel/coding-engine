@@ -177,6 +177,19 @@ TASK_SKILL_MAPPING: Dict[str, Tuple[str, Optional[str], Optional[str], int]] = {
     "api": ("APIAgent", "api-generation", "api-generator", 10),
     "frontend": ("GeneratorAgent", "code-generation", "coder", 10),
     "test": ("TesterTeamAgent", "test-generation", "test-runner", 8),
+
+    # =========================================================================
+    # Space Tasks → deterministic renderers (wave 1), LLM fill (wave 2)
+    # =========================================================================
+    "space_registry": ("BashExecutor", None, None, 3),
+    "space_manifest": ("BashExecutor", None, None, 3),
+    "space_mcp_server": ("BashExecutor", None, None, 3),
+    "space_electron": ("BashExecutor", None, None, 3),
+    "space_tests": ("BashExecutor", None, None, 3),
+    # Space verification → no agent, no model
+    "verify_space_contract": ("BashExecutor", None, None, 3),
+    "verify_space_tests": ("BashExecutor", None, None, 3),
+    "verify_space_status": ("BashExecutor", None, None, 3),
 }
 
 # Default commands for verification tasks
@@ -193,6 +206,17 @@ VERIFICATION_COMMANDS: Dict[str, str] = {
     "setup_deps": "npm install --legacy-peer-deps",
     # setup_project, setup_env, setup_database, setup_docker now handled by GeneratorAgent (LLM)
     # Only setup_deps remains as BashExecutor since it needs npm install after package.json exists
+
+    # Space rendering: the CLI writes the artefact the task declares
+    "space_registry": "python -m mcp_plugins.servers.grpc_host.space_cli render registry",
+    "space_manifest": "python -m mcp_plugins.servers.grpc_host.space_cli render manifest",
+    "space_mcp_server": "python -m mcp_plugins.servers.grpc_host.space_cli render mcp-server",
+    "space_electron": "python -m mcp_plugins.servers.grpc_host.space_cli render electron",
+    "space_tests": "python -m mcp_plugins.servers.grpc_host.space_cli render tests",
+    # Space verification
+    "verify_space_contract": "python -m mcp_plugins.servers.grpc_host.space_cli verify contract",
+    "verify_space_tests": "python -m mcp_plugins.servers.grpc_host.space_cli verify tests",
+    "verify_space_status": "python -m mcp_plugins.servers.grpc_host.space_cli verify status",
 }
 
 
