@@ -83,3 +83,58 @@ def render_agent_manifest(contract: SpaceContract) -> str:
     }
     return yaml.safe_dump(manifest, sort_keys=False, allow_unicode=True,
                           default_flow_style=False)
+
+
+def render_mcp_server(contract: SpaceContract) -> str:
+    """Render the space's FastMCP server with one stub per tool.
+
+    Stubs raise NotImplementedError on purpose. A stub that returned an
+    empty result would let the whole chain report success while doing
+    nothing - the failure mode the truth validators exist to prevent.
+    """
+    server = mcp_server_name(contract)
+    lines = [
+        '"""MCP server for the %s space.' % contract.id,
+        "",
+        "Generated from the space contract. Tool bodies are stubs; each one",
+        "raises until it is implemented.",
+        '"""',
+        "from __future__ import annotations",
+        "",
+        "import os",
+        "from typing import Any, Dict",
+        "",
+        "from mcp.server.fastmcp import FastMCP",
+        "",
+        'HOST = os.environ.get("%s_HOST", "127.0.0.1")' % contract.id.upper(),
+        'PORT = int(os.environ.get("%s_PORT", "%d"))'
+        % (contract.id.upper(), contract.runtime.port),
+        "",
+        'mcp = FastMCP("%s", host=HOST, port=PORT)' % server,
+        "",
+        "",
+        "@mcp.tool()",
+        "def healthz() -> Dict[str, Any]:",
+        '    """Liveness probe used by the space status check."""',
+        '    return {"ok": True, "space": "%s"}' % contract.id,
+        "",
+    ]
+
+    for tool in contract.tools:
+        params = ", ".join(f"{p}: str" for p in tool.params)
+        lines += [
+            "",
+            "@mcp.tool()",
+            f"def {tool.name}({params}) -> Dict[str, Any]:",
+            f'    """{tool.side_effect} operation: {tool.name}."""',
+            f'    raise NotImplementedError("{tool.name} is not implemented yet")',
+            "",
+        ]
+
+    lines += [
+        "",
+        'if __name__ == "__main__":',
+        '    mcp.run(transport="sse")',
+        "",
+    ]
+    return "\n".join(lines)

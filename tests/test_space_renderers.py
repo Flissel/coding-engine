@@ -76,3 +76,43 @@ def test_agent_manifest_events_are_sorted():
     contract = load_contract(FIXTURE)
     manifest = yaml.safe_load(render_agent_manifest(contract))
     assert manifest["events"] == sorted(manifest["events"])
+
+
+def test_mcp_server_scaffold_is_valid_python():
+    import ast
+    from mcp_plugins.servers.grpc_host.space_renderers import render_mcp_server
+
+    contract = load_contract(FIXTURE)
+    source = render_mcp_server(contract)
+    tree = ast.parse(source)  # raises SyntaxError if malformed
+
+    functions = {n.name for n in ast.walk(tree)
+                 if isinstance(n, ast.FunctionDef)}
+    assert {"notes_list", "notes_create", "healthz"} <= functions
+
+
+def test_mcp_server_scaffold_carries_tool_params():
+    import ast
+    from mcp_plugins.servers.grpc_host.space_renderers import render_mcp_server
+
+    contract = load_contract(FIXTURE)
+    tree = ast.parse(render_mcp_server(contract))
+    create = next(n for n in ast.walk(tree)
+                  if isinstance(n, ast.FunctionDef) and n.name == "notes_create")
+    assert [a.arg for a in create.args.args] == ["title", "body"]
+
+
+def test_mcp_server_scaffold_leaves_holes_not_fake_results():
+    """A stub must fail loudly, never return a plausible empty result."""
+    from mcp_plugins.servers.grpc_host.space_renderers import render_mcp_server
+
+    source = render_mcp_server(load_contract(FIXTURE))
+    assert source.count("raise NotImplementedError") == 2
+
+
+def test_mcp_server_scaffold_binds_contract_port():
+    from mcp_plugins.servers.grpc_host.space_renderers import render_mcp_server
+
+    source = render_mcp_server(load_contract(FIXTURE))
+    assert "8140" in source
+    assert "spaces-notes" in source
