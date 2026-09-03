@@ -96,6 +96,25 @@ def test_write_tool_needs_at_least_one_event():
         SpaceContract(**raw)
 
 
+def test_hyphenated_id_is_rejected():
+    """Hyphens make f"{sid}-{suffix}" task ids ambiguous (sales +
+    verify-tests collides with sales-verify + tests) and are unusable in
+    env var names, so the id grammar excludes them."""
+    raw = _read_only_contract()
+    raw["id"] = "my-space"
+    with pytest.raises(ValidationError, match="lowercase letters, digits "
+                        "and underscores"):
+        SpaceContract(**raw)
+
+
+def test_underscore_id_is_accepted():
+    raw = _read_only_contract()
+    raw["id"] = "my_space"
+    contract = SpaceContract(**raw)
+    assert contract.id == "my_space"
+    assert contract.agent_name == "brain-my_space"
+
+
 def test_load_contract_reads_yaml(tmp_path):
     import yaml
     from mcp_plugins.servers.grpc_host.space_contract import load_contract

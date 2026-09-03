@@ -45,11 +45,18 @@ def test_mcp_server_waits_for_registry_and_manifest():
 
 
 def test_verify_runs_after_every_build_task():
+    """All three verify tasks must depend on every build task, not just one
+    of them — this is what stops a partial generation from passing as
+    complete."""
     tasks = _tasks()
     build_ids = {t.id for t in tasks if not t.type.startswith("verify_")}
-    contract_verify = next(t for t in tasks
-                           if t.type == "verify_space_contract")
-    assert build_ids <= set(contract_verify.dependencies)
+    for verify_type in ("verify_space_contract", "verify_space_tests",
+                        "verify_space_status"):
+        verify_task = next(t for t in tasks if t.type == verify_type)
+        assert build_ids <= set(verify_task.dependencies), (
+            f"{verify_type} is missing build dependencies: "
+            f"{build_ids - set(verify_task.dependencies)}"
+        )
 
 
 def test_headless_space_has_no_electron_task():

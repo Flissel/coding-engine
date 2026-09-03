@@ -10,11 +10,20 @@ generated.
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Dict, List, Literal, Optional
 
 import yaml
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+# Lowercase letters, digits and underscores, starting with a letter. This
+# excludes hyphens deliberately: ids are used both to build task-id prefixes
+# (f"{sid}-{suffix}") and env-var stems, and hyphens break both — a hyphen in
+# the id makes "{sid}-{suffix}" ambiguous (space "sales" + suffix
+# "verify-tests" collides with space "sales-verify" + suffix "tests"), and a
+# hyphen in an env var name is not settable in a POSIX shell.
+SPACE_ID_PATTERN = re.compile(r"^[a-z][a-z0-9_]*$")
 
 
 class ContractError(ValueError):
@@ -70,6 +79,19 @@ class SpaceContract(BaseModel):
             if tool.name == name:
                 return tool
         return None
+
+    @field_validator("id")
+    @classmethod
+    def _validate_id(cls, value: str) -> str:
+        if not SPACE_ID_PATTERN.match(value):
+            raise ValueError(
+                f"space id '{value}' is invalid: must be lowercase letters, "
+                f"digits and underscores, starting with a letter "
+                f"(pattern {SPACE_ID_PATTERN.pattern}) — hyphens are not "
+                f"allowed because they make task ids ambiguous and are "
+                f"unusable in env var names"
+            )
+        return value
 
     @model_validator(mode="after")
     def _check_consistency(self) -> "SpaceContract":
