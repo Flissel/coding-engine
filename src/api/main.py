@@ -17,7 +17,14 @@ sys.path.insert(0, str(project_root))
 # Load .env file for persisted API keys (survives container restarts)
 _env_path = project_root / ".env"
 if _env_path.exists():
-    with open(_env_path) as _f:
+    # encoding is explicit on purpose: open() defaults to the platform
+    # locale, which is cp1252 on Windows. A single non-cp1252 byte in .env
+    # then raises UnicodeDecodeError at import time and the whole API
+    # refuses to start - invisible in the Linux container, fatal on a
+    # developer machine. errors="replace" keeps one bad byte from taking
+    # the process down; the affected line is skipped by the "=" check or
+    # lands as a mangled value, never as a crash.
+    with open(_env_path, encoding="utf-8", errors="replace") as _f:
         for _line in _f:
             _line = _line.strip()
             if _line and not _line.startswith("#") and "=" in _line:
