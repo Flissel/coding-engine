@@ -18,6 +18,14 @@ from typing import Dict, List, Optional
 import yaml
 
 from .space_contract import ContractError, SpaceContract, load_contract
+from .space_gap import (
+    DEFAULT_MAX_ROUNDS,
+    GapError,
+    GapLimitReached,
+    open_tools,
+    open_tools_detailed,
+    plan_gap_tasks,
+)
 from .space_renderers import (
     render_agent_manifest,
     render_capability_entries,
@@ -243,6 +251,39 @@ def _render_capabilities(target: Path, contract: SpaceContract) -> int:
     return 0
 
 
+def _do_gap(target: Path, contract: SpaceContract, round_no: int,
+            max_rounds: int) -> int:
+    """Vertrag gegen Ist - und was daraus an Nacharbeit folgt.
+
+    Drei Ausgaenge, absichtlich unterscheidbar: 0 keine Luecke, 1 Luecken
+    mit verbleibenden Runden, 2 Runden erschoepft. Ein Aufrufer, der 1 und
+    2 nicht trennen kann, laesst den Loop entweder ewig laufen oder bricht
+    zu frueh ab.
+    """
+    try:
+        gaps = open_tools(target, contract)
+    except GapError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+
+    if not gaps:
+        print(f"no gaps: {contract.id}")
+        return 0
+
+    try:
+        tasks = plan_gap_tasks(contract, gaps, round_no=round_no,
+                               max_rounds=max_rounds)
+    except GapLimitReached as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
+
+    print(f"round {round_no}/{max_rounds} - {len(gaps)} open:")
+    for name in gaps:
+        print(f"  {name}")
+    print(f"{len(tasks)} follow-up tasks planned")
+    return 1
+
+
 def _do_render(artefact: str, target: Path, contract: SpaceContract) -> int:
     if artefact == "registry":
         return _render_registry(target, contract)
@@ -395,61 +436,25 @@ def _verify_contract(target: Path, contract: SpaceContract) -> int:
 def _verify_fill(target: Path, contract: SpaceContract) -> int:
     """Every contract tool must have stopped raising NotImplementedError.
 
-    This is the gate that makes "filled" a fact instead of a claim: the
-    generated server is read back and each tool the contract names is
-    checked. A tool whose function is missing counts as open too - absent
-    is not implemented.
+    This is the gate that makes "filled" a fact instead of a claim. It
+    shares its reading with the gap loop (space_gap.open_tools_detailed):
+    two answers to the same question must not be able to drift apart.
     """
-    server_path = _server_path(target, contract)
-    if not server_path.is_file():
-        print(f"ERROR: mcp server missing: {server_path}", file=sys.stderr)
-        return 1
-
     try:
-        tree = ast.parse(server_path.read_text(encoding="utf-8"))
-    except SyntaxError as exc:
-        print(f"ERROR: generated server does not parse: {exc}",
-              file=sys.stderr)
+        gaps = open_tools_detailed(target, contract)
+    except GapError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
         return 1
 
-    bodies = {
-        node.name: node
-        for node in ast.walk(tree)
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-    }
-
-    open_tools: List[str] = []
-    for tool in contract.tools:
-        node = bodies.get(tool.name)
-        if node is None:
-            open_tools.append(f"{tool.name} (no function of that name)")
-            continue
-        # Anywhere in the body, not just as the first statement: a log line
-        # in front of the raise would otherwise be enough to pass the gate.
-        raises = any(
-            isinstance(inner, ast.Raise)
-            and _raises_not_implemented(inner)
-            for inner in ast.walk(node)
-        )
-        if raises:
-            open_tools.append(tool.name)
-
-    if open_tools:
-        for name in open_tools:
-            print(f"ERROR: contract tool not implemented: {name}",
+    if gaps:
+        for name, reason in gaps:
+            print(f"ERROR: contract tool not implemented: {name} ({reason})",
                   file=sys.stderr)
         return 1
 
     print(f"all {len(contract.tools)} contract tools implemented: "
           f"{contract.id}")
     return 0
-
-
-def _raises_not_implemented(node: ast.Raise) -> bool:
-    exc = node.exc
-    if isinstance(exc, ast.Call):
-        exc = exc.func
-    return isinstance(exc, ast.Name) and exc.id == "NotImplementedError"
 
 
 def _verify_tests(target: Path, contract: SpaceContract) -> int:
@@ -515,10 +520,16 @@ def main(argv: Optional[List[str]] = None) -> int:
         "registry", "manifest", "mcp-server", "electron", "tests",
         "capability", "all",
     ])
+    gap = sub.add_parser(
+        "gap", help="contract vs. generated code, and the rework it implies")
+    gap.add_argument("--round", type=int, default=1,
+                     help="which gap round this is (ids derive from it)")
+    gap.add_argument("--max-rounds", type=int, default=DEFAULT_MAX_ROUNDS,
+                     help="refuse further rounds beyond this")
     verify = sub.add_parser("verify", help="check artefacts against contract")
     verify.add_argument("check", choices=["contract", "fill", "tests", "status"])
 
-    for p in (render, verify):
+    for p in (render, verify, gap):
         p.add_argument("--contract", required=True,
                        help="path to the space contract YAML")
         p.add_argument("--target", required=True,
@@ -538,6 +549,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     target = Path(args.target)
     if args.command == "render":
         return _do_render(args.artefact, target, contract)
+    if args.command == "gap":
+        return _do_gap(target, contract, args.round, args.max_rounds)
     return _do_verify(args.check, target, contract)
 
 
