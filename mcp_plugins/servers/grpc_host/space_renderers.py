@@ -94,10 +94,17 @@ def render_capability_entries(contract: SpaceContract) -> str:
                 f"{event_name} in the {contract.id} space: "
                 f"{tool.side_effect} via {tool.name}. {contract.description}"
             ),
-            # No match_patterns: this capability is reached by name from the
-            # hop the space registry routes, not by intent regex. Adding
-            # natural-language patterns is domain work, not something the
-            # contract can derive.
+            # match_patterns is not optional: capability_router._load
+            # skips any entry that compiles no usable regex, so an entry
+            # without one never enters the router and get_capability()
+            # returns None - the validator would be unreachable. These
+            # two are the identifiers themselves, narrow enough that they
+            # cannot capture unrelated intent; natural-language phrasing
+            # is domain work for a later wave.
+            "match_patterns": [
+                event_name.replace(".", r"\."),
+                r"\b" + tool.name + r"\b",
+            ],
             "execution_target": (
                 f"mcp:{contract.agent_name}:{mcp_server_name(contract)}:"
                 f"{tool.name}"

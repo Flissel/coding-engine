@@ -92,3 +92,30 @@ def test_read_event_with_a_truth_validator_is_rendered_too():
     assert [e["capability"] for e in entries] == ["notes_list"]
     post = entries[0]["validator"]["postcondition"]
     assert post == {"check": "http_ok", "url": "http://127.0.0.1:8140/healthz"}
+
+def test_capability_carries_at_least_one_compilable_pattern():
+    """capability_router._load drops any entry whose match_patterns
+    compile to nothing ("has no usable patterns, skipping"). Such an
+    entry never enters the router, get_capability() returns None, and
+    the validator is unreachable - the exact silent gap this artefact
+    exists to close. Measured against the real router: without patterns
+    it was skipped."""
+    import re
+
+    entry = _entries(_write_contract())[0]
+    compiled = [re.compile(p, re.IGNORECASE)
+                for p in entry["match_patterns"]]
+    assert compiled, "the router would skip this entry"
+    assert any(p.search("notes.create") for p in compiled)
+    assert any(p.search("notes_create") for p in compiled)
+
+
+def test_event_pattern_escapes_the_dot():
+    """An unescaped dot turns the event id into a wildcard that also
+    matches unrelated text."""
+    import re
+
+    entry = _entries(_write_contract())[0]
+    event_pattern = re.compile(entry["match_patterns"][0], re.IGNORECASE)
+    assert event_pattern.search("notes.create")
+    assert not event_pattern.search("notesXcreate")
