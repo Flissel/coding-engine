@@ -98,6 +98,50 @@ def plan_space_tasks(contract: SpaceContract) -> List[Task]:
         )
         build_deps.append(electron)
 
+    # Fill: je Vertrags-Tool eine Aufgabe fuer das Modell. Der Scaffold
+    # hat nur Stubs hinterlassen, die NotImplementedError werfen; ohne
+    # diese Aufgaben bleibt der Space eine vollstaendig verdrahtete Huelle.
+    fill_ids = []
+    for tool in contract.tools:
+        events = sorted(
+            name for name, event in contract.events.items()
+            if event.tool == tool.name
+        )
+        duties = ""
+        if tool.side_effect == "write":
+            obligations = []
+            for name in events:
+                event = contract.events[name]
+                if event.required_provenance:
+                    obligations.append(
+                        "required_provenance "
+                        + ", ".join(event.required_provenance)
+                    )
+                if event.truth is not None:
+                    obligations.append(f"truth {event.truth.kind}")
+            if obligations:
+                duties = " Obligations: " + "; ".join(obligations) + "."
+        fill_ids.append(add(
+            f"fill-{tool.name}", "space_fill_tool",
+            f"Implement {tool.name} in the {sid} space",
+            f"Replace the NotImplementedError stub of {tool.name} in "
+            f"spaces/{sid}/server.py. side_effect={tool.side_effect}, "
+            f"params={tool.params or '[]'}, returns={tool.returns or '{}'}, "
+            f"events={events or '[]'}.{duties}",
+            [server],
+            [f"spaces/{sid}/server.py"],
+            minutes=15,
+        ))
+
+    fill_gate = add(
+        "verify-fill", "verify_space_fill",
+        f"Check every {sid} tool actually got implemented",
+        "Read the generated server back and refuse while any contract tool "
+        "still raises NotImplementedError.",
+        list(fill_ids) + [server], [], minutes=3,
+    )
+    build_deps.append(fill_gate)
+
     space_tests = add(
         "tests", "space_tests",
         f"Write the {sid} verification tests",

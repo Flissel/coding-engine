@@ -7,6 +7,7 @@ commands as gates, so silence must never look like success.
 from __future__ import annotations
 
 import argparse
+import ast
 import subprocess
 import sys
 import urllib.error
@@ -391,6 +392,66 @@ def _verify_contract(target: Path, contract: SpaceContract) -> int:
     return 0
 
 
+def _verify_fill(target: Path, contract: SpaceContract) -> int:
+    """Every contract tool must have stopped raising NotImplementedError.
+
+    This is the gate that makes "filled" a fact instead of a claim: the
+    generated server is read back and each tool the contract names is
+    checked. A tool whose function is missing counts as open too - absent
+    is not implemented.
+    """
+    server_path = _server_path(target, contract)
+    if not server_path.is_file():
+        print(f"ERROR: mcp server missing: {server_path}", file=sys.stderr)
+        return 1
+
+    try:
+        tree = ast.parse(server_path.read_text(encoding="utf-8"))
+    except SyntaxError as exc:
+        print(f"ERROR: generated server does not parse: {exc}",
+              file=sys.stderr)
+        return 1
+
+    bodies = {
+        node.name: node
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+
+    open_tools: List[str] = []
+    for tool in contract.tools:
+        node = bodies.get(tool.name)
+        if node is None:
+            open_tools.append(f"{tool.name} (no function of that name)")
+            continue
+        # Anywhere in the body, not just as the first statement: a log line
+        # in front of the raise would otherwise be enough to pass the gate.
+        raises = any(
+            isinstance(inner, ast.Raise)
+            and _raises_not_implemented(inner)
+            for inner in ast.walk(node)
+        )
+        if raises:
+            open_tools.append(tool.name)
+
+    if open_tools:
+        for name in open_tools:
+            print(f"ERROR: contract tool not implemented: {name}",
+                  file=sys.stderr)
+        return 1
+
+    print(f"all {len(contract.tools)} contract tools implemented: "
+          f"{contract.id}")
+    return 0
+
+
+def _raises_not_implemented(node: ast.Raise) -> bool:
+    exc = node.exc
+    if isinstance(exc, ast.Call):
+        exc = exc.func
+    return isinstance(exc, ast.Name) and exc.id == "NotImplementedError"
+
+
 def _verify_tests(target: Path, contract: SpaceContract) -> int:
     tests_dir = _tests_dir(target, contract)
     if not tests_dir.is_dir():
@@ -432,6 +493,8 @@ def _verify_status(target: Path, contract: SpaceContract) -> int:
 def _do_verify(check: str, target: Path, contract: SpaceContract) -> int:
     if check == "contract":
         return _verify_contract(target, contract)
+    if check == "fill":
+        return _verify_fill(target, contract)
     if check == "tests":
         return _verify_tests(target, contract)
     if check == "status":
@@ -453,7 +516,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         "capability", "all",
     ])
     verify = sub.add_parser("verify", help="check artefacts against contract")
-    verify.add_argument("check", choices=["contract", "tests", "status"])
+    verify.add_argument("check", choices=["contract", "fill", "tests", "status"])
 
     for p in (render, verify):
         p.add_argument("--contract", required=True,

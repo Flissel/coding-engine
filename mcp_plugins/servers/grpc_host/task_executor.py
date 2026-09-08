@@ -189,7 +189,11 @@ TASK_SKILL_MAPPING: Dict[str, Tuple[str, Optional[str], Optional[str], int]] = {
     # The capability entry is what carries a contract's truth: validator
     # to world_observer; without this task the artefact is never written.
     "space_capability": ("BashExecutor", None, None, 3),
+    # Fill is the one space task that needs a model: the scaffold leaves
+    # NotImplementedError stubs and only domain logic can close them.
+    "space_fill_tool": ("GeneratorAgent", "space-tool-implementation", "coder", 12),
     # Space verification → no agent, no model
+    "verify_space_fill": ("BashExecutor", None, None, 3),
     "verify_space_contract": ("BashExecutor", None, None, 3),
     "verify_space_tests": ("BashExecutor", None, None, 3),
     "verify_space_status": ("BashExecutor", None, None, 3),
@@ -218,6 +222,7 @@ VERIFICATION_COMMANDS: Dict[str, str] = {
     "space_tests": "python -m mcp_plugins.servers.grpc_host.space_cli render tests",
     "space_capability": "python -m mcp_plugins.servers.grpc_host.space_cli render capability",
     # Space verification
+    "verify_space_fill": "python -m mcp_plugins.servers.grpc_host.space_cli verify fill",
     "verify_space_contract": "python -m mcp_plugins.servers.grpc_host.space_cli verify contract",
     "verify_space_tests": "python -m mcp_plugins.servers.grpc_host.space_cli verify tests",
     "verify_space_status": "python -m mcp_plugins.servers.grpc_host.space_cli verify status",
@@ -1344,6 +1349,54 @@ Execute this task using the available MCP tools. Write all files to the working 
     # Prompt Generation
     # =========================================================================
 
+    def _gather_space_context(self, task: Task,
+                              skill_name: Optional[str] = None) -> str:
+        """Context for a VibeMind space task.
+
+        Deliberately narrow: the target file, what the contract says about
+        the one tool, and the rule that nothing else may move. The space
+        contract facts (side_effect, params, returns, events, provenance
+        and truth obligations) are carried in the task description by
+        space_task_planner, so they need no second source here.
+        """
+        target = task.output_files[0] if task.output_files else "unknown"
+        parts = [
+            "## What you are working on",
+            "A VibeMind space: a FastMCP server that is already fully "
+            "wired. This is NOT a NestJS/Prisma/React project - there is no "
+            "src/modules/, no Prisma, no frontend build.",
+            "",
+            "## The only file you may change",
+            f"`{target}`",
+            "",
+            "## Rules",
+            "- Replace ONLY the body of the one function named below. Its "
+            "name, signature and decorator stay exactly as they are: the "
+            "registry, the agent manifest and the generated tests all bind "
+            "to them.",
+            "- Do not touch the other tools in the same file.",
+            "- Do not add imports that will not exist at the space's "
+            "runtime.",
+            "- A body that returns an empty result instead of doing the "
+            "work is worse than the stub: the whole chain then reports "
+            "success while nothing happened. If you cannot implement it, "
+            "leave NotImplementedError standing - a gate exists to make "
+            "that visible.",
+            "",
+            "## Task",
+            task.title,
+            "",
+            task.description,
+            "",
+        ]
+        if skill_name:
+            parts.extend([
+                f"## Skill Context: {skill_name}",
+                f"Follow the {skill_name} skill.",
+                "",
+            ])
+        return "\n".join(parts)
+
     def _gather_context(self, task: Task, skill_name: Optional[str] = None) -> str:
         """
         Stage 1 input: Gathers all raw context for a task.
@@ -1366,6 +1419,15 @@ Execute this task using the available MCP tools. Write all files to the working 
         Returns:
             Raw context string for Stage 1 distillation
         """
+        # Space tasks are not web-app tasks. Everything below assumes a
+        # NestJS/Prisma project and tells the model that ALL source code
+        # goes to src/modules/<name>/ - which is wrong for a space, whose
+        # code lives in the generated FastMCP server at
+        # spaces/<id>/server.py. Handing a space task that context would
+        # steer it into the wrong tree, so it gets its own.
+        if task.type.startswith("space_"):
+            return self._gather_space_context(task, skill_name)
+
         prompt_parts = []
 
         # =====================================================================

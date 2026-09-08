@@ -45,20 +45,35 @@ def test_mcp_server_waits_for_registry_and_manifest():
     assert tasks["space_manifest"].id in deps
 
 
+def _reachable(tasks, task_id):
+    """Alle Tasks, die vor task_id fertig sein muessen - transitiv."""
+    by_id = {t.id: t for t in tasks}
+    seen, stack = set(), list(by_id[task_id].dependencies)
+    while stack:
+        current = stack.pop()
+        if current in seen:
+            continue
+        seen.add(current)
+        stack.extend(by_id[current].dependencies)
+    return seen
+
+
 def test_verify_runs_after_every_build_task():
-    """All three verify tasks must depend on every build task, not just one
-    of them — this is what stops a partial generation from passing as
-    complete."""
+    """Keine Verifikation darf laufen, bevor jeder Build-Task fertig
+    ist - sonst geht eine halbe Generierung als vollstaendig durch.
+
+    Transitiv geprueft, nicht direkt: seit der Fill-Stufe haengen die
+    Verifikationen ueber das Fill-Gate an den Fuell-Aufgaben. Die
+    Reihenfolge ist damit dieselbe, die Kante eine andere."""
     tasks = _tasks()
     build_ids = {t.id for t in tasks if not t.type.startswith("verify_")}
     for verify_type in ("verify_space_contract", "verify_space_tests",
                         "verify_space_status"):
         verify_task = next(t for t in tasks if t.type == verify_type)
-        assert build_ids <= set(verify_task.dependencies), (
-            f"{verify_type} is missing build dependencies: "
-            f"{build_ids - set(verify_task.dependencies)}"
+        missing = build_ids - _reachable(tasks, verify_task.id)
+        assert not missing, (
+            f"{verify_type} kann vor diesen Build-Tasks laufen: {missing}"
         )
-
 
 def test_headless_space_has_no_electron_task():
     from mcp_plugins.servers.grpc_host.space_contract import SpaceContract
