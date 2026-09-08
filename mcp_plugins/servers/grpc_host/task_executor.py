@@ -692,6 +692,11 @@ class TaskExecutor:
                 agent_type=agent_type,
                 claude_agent=claude_agent,
                 max_turns=max_turns,
+                # The skill column of TASK_SKILL_MAPPING is documented as
+                # "injected into prompt" but was never passed: the tool
+                # picked one from agent_type instead, so every general task
+                # got code-generation (TypeScript + React).
+                skill_name=skill_name,
             )
 
             return TaskExecutionResult(

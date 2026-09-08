@@ -893,6 +893,7 @@ Use this for implementing features, fixing bugs, or creating new components.""",
         self,
         query: Optional[str] = None,
         agent_type: str = "general",
+        skill_name: Optional[str] = None,
     ) -> dict[str, str]:
         """
         Load context sources selectively based on agent type using asyncio.gather.
@@ -943,7 +944,7 @@ Use this for implementing features, fixing bugs, or creating new components.""",
 
         # Check if a skill will be loaded for this agent type
         # If yes, use project_only=True to skip Engine CLAUDE.md
-        skill_will_load = self._get_skill_for_agent(agent_type) is not None
+        skill_will_load = self._get_skill_for_agent(agent_type, skill_name) is not None
         project_only = skill_will_load  # Skip engine CLAUDE.md when skill provides context
 
         self.logger.debug(
@@ -1167,6 +1168,7 @@ Use this for implementing features, fixing bugs, or creating new components.""",
         context_files: Optional[list[str]] = None,
         claude_agent: Optional[str] = None,
         max_turns: Optional[int] = None,
+        skill_name: Optional[str] = None,
     ) -> CodeGenerationResult:
         """
         Execute code generation via Claude Agent SDK or CLI (fallback).
@@ -1198,15 +1200,18 @@ Use this for implementing features, fixing bugs, or creating new components.""",
             auto_context = await self._load_all_context_parallel(
                 query=prompt[:300],
                 agent_type=agent_type,
+                skill_name=skill_name,
             )
 
         # Build full prompt with all context
-        full_prompt = await self._build_enriched_prompt(prompt, context, agent_type, auto_context)
+        full_prompt = await self._build_enriched_prompt(
+            prompt, context, agent_type, auto_context,
+            skill_name=skill_name)
 
         # Enhanced logging for visibility
         # Longer preview (500 chars) for better debugging visibility
         prompt_preview = prompt[:500].replace("\n", " ") + "..." if len(prompt) > 500 else prompt.replace("\n", " ")
-        active_skill = self._get_skill_for_agent(agent_type)
+        active_skill = self._get_skill_for_agent(agent_type, skill_name)
         self.logger.info(
             "CLAUDE_CLI_START",
             agent_type=agent_type,
@@ -1940,7 +1945,9 @@ Use this for implementing features, fixing bugs, or creating new components.""",
 
         return errors[:10]  # Cap at 10 errors for efficiency
 
-    def _get_skill_for_agent(self, agent_type: str) -> Optional["Skill"]:
+    def _get_skill_for_agent(self, agent_type: str,
+                             skill_name: Optional[str] = None
+                             ) -> Optional["Skill"]:
         """
         Get skill for a specific agent type with caching.
 
@@ -1949,17 +1956,27 @@ Use this for implementing features, fixing bugs, or creating new components.""",
 
         Args:
             agent_type: The agent/domain type (e.g., 'backend', 'testing')
+            skill_name: Explicit skill for this call, from the executor's
+                TASK_SKILL_MAPPING. Wins over both the instance-wide skill
+                and the agent_type guess - it is the most specific thing
+                anyone said about this particular task.
 
         Returns:
             Skill object or None if not found
         """
-        # If a global skill is set, use that
-        if self.skill:
-            return self.skill
+        # An explicit skill_name wins over the agent_type guess: the
+        # executor's TASK_SKILL_MAPPING names the skill per task type, and
+        # that name is the one documented to be injected. Without this the
+        # agent_type map silently answered "code-generation" (TypeScript +
+        # React) for every general task - including Python space tools.
+        cache_key = skill_name or agent_type
+        if cache_key in self._skill_cache:
+            return self._skill_cache[cache_key]
 
-        # Check cache first
-        if agent_type in self._skill_cache:
-            return self._skill_cache[agent_type]
+        # A skill set on the instance covers every call that did not name
+        # one itself.
+        if not skill_name and self.skill:
+            return self.skill
 
         # Load skill dynamically
         try:
@@ -1986,11 +2003,22 @@ Use this for implementing features, fixing bugs, or creating new components.""",
             engine_root = Path(__file__).parent.parent.parent
             loader = SkillLoader(engine_root)
 
-            skill_name = AGENT_SKILL_MAP.get(agent_type, "code-generation")
-            skill = loader.load_skill(skill_name)
+            resolved = skill_name or AGENT_SKILL_MAP.get(
+                agent_type, "code-generation")
+            skill = loader.load_skill(resolved)
+            if skill is None and skill_name:
+                # A named skill that does not exist is a wiring error, not a
+                # reason to quietly send TypeScript rules to a Python task.
+                self.logger.warning(
+                    "named_skill_not_found",
+                    skill_name=skill_name,
+                    agent_type=agent_type,
+                )
+                return None
+            skill_name = resolved
 
             if skill:
-                self._skill_cache[agent_type] = skill
+                self._skill_cache[cache_key] = skill
                 self.logger.debug(
                     "skill_loaded_for_agent",
                     agent_type=agent_type,
@@ -2213,6 +2241,7 @@ Use this for implementing features, fixing bugs, or creating new components.""",
         context: Optional[str],
         agent_type: str,
         auto_context: dict[str, str],
+        skill_name: Optional[str] = None,
     ) -> str:
         """
         Build the full prompt with all context sources including Supermemory and Skills.
@@ -2237,7 +2266,7 @@ Use this for implementing features, fixing bugs, or creating new components.""",
         # Skip skill instructions in minimal context mode (for validation fixes)
         # Uses tier-based loading for token efficiency (v2.0)
         if not self.minimal_context:
-            skill = self._get_skill_for_agent(agent_type)
+            skill = self._get_skill_for_agent(agent_type, skill_name)
             if skill:
                 # Determine skill tier: override > detection > full
                 tier = self.skill_tier
