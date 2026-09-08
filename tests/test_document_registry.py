@@ -18,10 +18,9 @@ from datetime import datetime
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent))
 
-from src.registry import (
-    DocumentRegistry,
-    DocumentType,
-    DocumentStatus,
+from src.registry.document_registry import DocumentRegistry
+from src.registry.document_types import DocumentType, DocumentStatus
+from src.registry.documents import (
     DebugReport,
     ImplementationPlan,
     TestSpec,

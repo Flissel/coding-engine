@@ -96,6 +96,9 @@ def make_orchestrator(max_parallel: int = 1) -> EpicOrchestrator:
     orch.task_executor.execute_task = AsyncMock(
         return_value=TaskExecutionResult(success=True, output="OK", error=None)
     )
+    # See test_pipeline_executor.make_orchestrator: __init__ is bypassed here, so the
+    # real __init__'s self.db_sync = None default has to be mirrored explicitly.
+    orch.db_sync = None
     return orch
 
 

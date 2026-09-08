@@ -10,7 +10,15 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 # Add project root to path
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+_PROJECT_ROOT = Path(__file__).parent.parent.parent
+sys.path.insert(0, str(_PROJECT_ROOT))
+
+# run_orchestrator.py was moved out of the project root into _archive/old_runners/
+# by the root cleanup in aa41933 ("chore: Clean root, update README, archive old
+# scripts"). That commit moved 18 runner scripts but did not update the tests that
+# import them, so this conftest - and with it the whole pytest session - failed to
+# collect. Keep the archived location importable so these tests keep running.
+sys.path.insert(0, str(_PROJECT_ROOT / "_archive" / "old_runners"))
 
 from run_orchestrator import OrchestratorConfig, PhaseResult
 

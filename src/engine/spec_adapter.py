@@ -6,6 +6,9 @@ Supports:
 - Rich billing spec: { project: {...}, llms: {...}, agents: {...} }
 - Legacy format: { meta: {...}, requirements: [...], tech_stack: {...} }
 - Documentation format: Directory with MASTER_DOCUMENT.md, tech_stack/, user_stories/, etc.
+- Spec-kit format: Feature directory with spec.md, plan.md, tasks.md
+  (github/spec-kit artifact conventions, adapted as a data format only —
+  execution stays with the engine pipeline)
 - Markdown requirements (future)
 """
 
@@ -26,6 +29,7 @@ class SpecFormat(Enum):
     RICH_BILLING = "rich_billing"      # { project: {...}, llms: {...}, agents: {...} }
     LEGACY_TECHSTACK = "legacy_techstack"  # { meta: {...}, requirements: [...], tech_stack: {...} }
     SIMPLE = "simple"                  # { requirements: [...] }
+    SPEC_KIT = "spec_kit"              # Directory with spec.md, plan.md, tasks.md
 
 # Lazy import to avoid circular dependency
 _documentation_loader = None
@@ -85,6 +89,35 @@ class APIEndpoint:
 
 
 @dataclass
+class SpecKitTask:
+    """A single task parsed from a spec-kit tasks.md line.
+
+    Line format: `- [ ] T001 [P] [US1] Description with exact file path`,
+    where `[P]` marks parallel-safe tasks and `[USn]` links the user story.
+    """
+    task_id: str
+    description: str
+    parallel: bool = False
+    story: Optional[str] = None
+    phase: str = ""
+    phase_index: int = 0
+    file_paths: List[str] = field(default_factory=list)
+    completed: bool = False
+
+    def to_dict(self) -> Dict:
+        return {
+            "task_id": self.task_id,
+            "description": self.description,
+            "parallel": self.parallel,
+            "story": self.story,
+            "phase": self.phase,
+            "phase_index": self.phase_index,
+            "file_paths": self.file_paths,
+            "completed": self.completed,
+        }
+
+
+@dataclass
 class ContextLayers:
     """Optional rich context extracted from detailed specs."""
     api_specs: List[APIEndpoint] = field(default_factory=list)
@@ -100,6 +133,8 @@ class ContextLayers:
     epics: List[Dict] = field(default_factory=list)  # Epic definitions
     design_tokens: Dict = field(default_factory=dict)  # UI design tokens
     features: List[Dict] = field(default_factory=list)  # Feature breakdowns
+    # Spec-kit format extension
+    tasks: List[Dict] = field(default_factory=list)  # Parsed tasks.md entries
 
     def to_dict(self) -> Dict:
         return {
@@ -115,6 +150,7 @@ class ContextLayers:
             "epics": self.epics,
             "design_tokens": self.design_tokens,
             "features": self.features,
+            "tasks": self.tasks,
         }
 
     def has_content(self) -> bool:
@@ -123,7 +159,7 @@ class ContextLayers:
             self.api_specs or self.db_schema or self.llm_config or
             self.agent_defs or self.workflows or self.frontend_specs or
             self.monitoring_config or self.diagrams or self.entities or
-            self.epics or self.design_tokens or self.features
+            self.epics or self.design_tokens or self.features or self.tasks
         )
 
     def get_diagrams_by_type(self, diagram_type: str) -> List[Dict]:
@@ -193,6 +229,7 @@ class SpecAdapter:
         - Rich billing: { project: {...}, llms: {...}, agents: {...} }
         - Legacy: { meta: {...}, requirements: [...], tech_stack: {...} }
         - Documentation: Directory with MASTER_DOCUMENT.md, tech_stack/, etc.
+        - Spec-kit: Directory with spec.md, plan.md, tasks.md
     """
 
     def __init__(self):
@@ -217,6 +254,10 @@ class SpecAdapter:
                 self.last_format = SpecFormat.DOCUMENTATION
                 logger.info("spec_format_detected", format="documentation", source=str(path))
                 return self._normalize_documentation(path)
+            elif self._is_speckit_project(path):
+                self.last_format = SpecFormat.SPEC_KIT
+                logger.info("spec_format_detected", format="spec_kit", source=str(path))
+                return self._normalize_speckit(path)
             else:
                 # Try to find a spec file in the directory
                 for spec_file in ["requirements.json", "spec.json", "project.json"]:
@@ -244,6 +285,16 @@ class SpecAdapter:
             path / "content_analysis.json",
         ]
         return any(indicator.exists() for indicator in indicators)
+
+    def _is_speckit_project(self, path: Path) -> bool:
+        """Check if path is a spec-kit feature directory (spec.md + tasks.md).
+
+        plan.md is deliberately not part of detection: a feature directory
+        without plan.md is still recognized as spec-kit and then rejected
+        fail-closed in _normalize_speckit with a clear error, instead of
+        silently falling through to another format.
+        """
+        return (path / "spec.md").exists() and (path / "tasks.md").exists()
 
     def normalize(self, raw_spec: Dict, source_path: str = "") -> NormalizedSpec:
         """Normalize any spec format to internal format."""
@@ -682,6 +733,243 @@ class SpecAdapter:
         )
 
     # =========================================================================
+    # SPEC-KIT FORMAT NORMALIZER
+    # =========================================================================
+
+    # `- [ ] T001 [P] [US1] Description ...` (checkbox, id, optional flags)
+    _SPECKIT_TASK_RE = re.compile(
+        r"^-\s+\[(?P<done>[ xX])\]\s+(?P<id>T\d+)"
+        r"(?:\s+\[(?P<parallel>P)\])?"
+        r"(?:\s+\[(?P<story>US\d+)\])?"
+        r"\s+(?P<desc>.+)$"
+    )
+    _SPECKIT_STORY_RE = re.compile(
+        r"^###\s+User Story (?P<num>\d+)\s*-\s*(?P<title>.+?)"
+        r"(?:\s*\(Priority:\s*(?P<prio>P\d+)\))?\s*$"
+    )
+    _SPECKIT_FR_RE = re.compile(r"^-\s+\*\*(?P<id>FR-\d+)\*\*:\s*(?P<text>.+)$")
+    # File paths mentioned in task descriptions: `src/api/notes.py` or bare
+    # well-known filenames like `pyproject.toml`.
+    _SPECKIT_PATH_RE = re.compile(
+        r"(?:[\w.-]+/)+[\w.-]+\.[A-Za-z0-9_]+"
+        r"|\b[\w-]+\.(?:py|sql|toml|yaml|yml|json|md|ts|tsx|js|jsx|css|html|txt|ini|cfg)\b"
+    )
+    _SPECKIT_STORY_PRIORITY = {"P1": "high", "P2": "medium"}  # P3+ -> low
+
+    def _normalize_speckit(self, project_path: Path) -> NormalizedSpec:
+        """Normalize a spec-kit feature directory {spec.md, plan.md, tasks.md}.
+
+        Mapping (spec-kit artifact -> internal format):
+        - spec.md user stories   -> Requirement (req_id USn, priority from Pn)
+        - spec.md FR-xxx list    -> Requirement (req_id FR-xxx)
+        - plan.md tech context   -> tech_stack (full context kept verbatim
+                                    under tech_stack["technical_context"])
+        - tasks.md task lines    -> context_layers.tasks (SpecKitTask dicts);
+                                    speckit_tasks_to_slices() maps them to
+                                    TaskSlice for the slicer/planning chain
+
+        Fail-closed: missing plan.md raises FileNotFoundError; a tasks.md
+        without any task lines or with duplicate task ids raises ValueError.
+        """
+        plan_path = project_path / "plan.md"
+        if not plan_path.exists():
+            raise FileNotFoundError(
+                f"spec-kit feature directory {project_path} has no plan.md. "
+                "A spec-kit job spec requires spec.md, plan.md and tasks.md; "
+                "run the planning step before submitting the job."
+            )
+
+        spec_text = (project_path / "spec.md").read_text(encoding="utf-8")
+        plan_text = plan_path.read_text(encoding="utf-8")
+        tasks_text = (project_path / "tasks.md").read_text(encoding="utf-8")
+
+        project_name = self._speckit_title(spec_text)
+        requirements = self._parse_speckit_requirements(spec_text)
+        tech_context = self._parse_speckit_tech_context(plan_text)
+        tasks = self._parse_speckit_tasks(tasks_text)
+
+        tech_stack = {
+            "id": "spec_kit_stack",
+            "name": project_name,
+            "backend": {
+                "language": tech_context.get("Language/Version", ""),
+                "framework": tech_context.get("Primary Dependencies", ""),
+            },
+            "database": {"type": tech_context.get("Storage", "")},
+            "testing": {"framework": tech_context.get("Testing", "")},
+            "deployment": {"platform": tech_context.get("Target Platform", "")},
+            "project_type": tech_context.get("Project Type", ""),
+            "technical_context": tech_context,
+        }
+
+        logger.info(
+            "speckit_normalized",
+            requirements=len(requirements),
+            tasks=len(tasks),
+            path=str(project_path),
+        )
+
+        return NormalizedSpec(
+            project_name=project_name,
+            project_description=self._speckit_summary(plan_text),
+            requirements=requirements,
+            tech_stack=tech_stack,
+            context_layers=ContextLayers(tasks=[t.to_dict() for t in tasks]),
+            raw_spec={
+                "format": "spec_kit",
+                "path": str(project_path),
+                "story_count": sum(
+                    1 for r in requirements if r.source == "spec.md:user_story"
+                ),
+                "task_count": len(tasks),
+            },
+        )
+
+    def _speckit_title(self, spec_text: str) -> str:
+        """Project name from the spec.md h1 title."""
+        for line in spec_text.splitlines():
+            match = re.match(r"^#\s+(?:Feature Specification:\s*)?(.+?)\s*$", line)
+            if match:
+                return match.group(1)
+        return "Unnamed Feature"
+
+    def _speckit_summary(self, plan_text: str) -> str:
+        """First paragraph of the plan.md Summary section, if present."""
+        lines = plan_text.splitlines()
+        in_summary = False
+        collected: List[str] = []
+        for line in lines:
+            if re.match(r"^##\s+Summary\s*$", line):
+                in_summary = True
+                continue
+            if in_summary:
+                if line.startswith("#"):
+                    break
+                if line.strip():
+                    collected.append(line.strip())
+                elif collected:
+                    break
+        return " ".join(collected)
+
+    def _parse_speckit_requirements(self, spec_text: str) -> List[Requirement]:
+        """User stories and functional requirements from spec.md."""
+        requirements: List[Requirement] = []
+        lines = spec_text.splitlines()
+
+        # User stories: heading plus the first paragraph as description
+        current_story: Optional[Requirement] = None
+        desc_lines: List[str] = []
+
+        def flush_story():
+            nonlocal current_story, desc_lines
+            if current_story is not None:
+                current_story.description = " ".join(desc_lines).strip()
+                requirements.append(current_story)
+            current_story = None
+            desc_lines = []
+
+        for line in lines:
+            story_match = self._SPECKIT_STORY_RE.match(line)
+            if story_match:
+                flush_story()
+                priority_tag = story_match.group("prio")
+                current_story = Requirement(
+                    req_id=f"US{story_match.group('num')}",
+                    title=story_match.group("title"),
+                    priority=(
+                        self._SPECKIT_STORY_PRIORITY.get(priority_tag, "low")
+                        if priority_tag else "medium"
+                    ),
+                    source="spec.md:user_story",
+                )
+                continue
+            if current_story is not None:
+                # Description ends at the next heading or bold block
+                # (acceptance scenarios, priority rationale, ...)
+                if line.startswith("#") or line.lstrip().startswith("**"):
+                    flush_story()
+                elif line.strip():
+                    desc_lines.append(line.strip())
+        flush_story()
+
+        # Functional requirements
+        for line in lines:
+            fr_match = self._SPECKIT_FR_RE.match(line)
+            if fr_match:
+                requirements.append(Requirement(
+                    req_id=fr_match.group("id"),
+                    title=fr_match.group("text"),
+                    description=fr_match.group("text"),
+                    source="spec.md:functional_requirement",
+                ))
+
+        return requirements
+
+    def _parse_speckit_tech_context(self, plan_text: str) -> Dict[str, str]:
+        """`**Key**: value` lines from the plan.md Technical Context section."""
+        context: Dict[str, str] = {}
+        in_section = False
+        for line in plan_text.splitlines():
+            if re.match(r"^##\s+Technical Context\s*$", line):
+                in_section = True
+                continue
+            if in_section:
+                if line.startswith("#"):
+                    break
+                kv_match = re.match(r"^\*\*(?P<key>[^*]+)\*\*:\s*(?P<value>.+)$", line)
+                if kv_match:
+                    context[kv_match.group("key").strip()] = kv_match.group("value").strip()
+        return context
+
+    def _parse_speckit_tasks(self, tasks_text: str) -> List[SpecKitTask]:
+        """Task lines from tasks.md, keeping phase grouping and order."""
+        tasks: List[SpecKitTask] = []
+        seen_ids: set = set()
+        phase = ""
+        phase_index = -1
+
+        for line in tasks_text.splitlines():
+            heading_match = re.match(r"^##\s+(.+?)\s*$", line)
+            if heading_match:
+                phase = heading_match.group(1)
+                phase_index += 1
+                continue
+
+            task_match = self._SPECKIT_TASK_RE.match(line)
+            if not task_match:
+                continue
+
+            task_id = task_match.group("id")
+            if task_id in seen_ids:
+                raise ValueError(
+                    f"Duplicate task id {task_id} in tasks.md — "
+                    "task ids must be unique for deterministic slicing."
+                )
+            seen_ids.add(task_id)
+
+            description = task_match.group("desc").strip()
+            tasks.append(SpecKitTask(
+                task_id=task_id,
+                description=description,
+                parallel=task_match.group("parallel") is not None,
+                story=task_match.group("story"),
+                phase=phase,
+                phase_index=max(phase_index, 0),
+                file_paths=list(dict.fromkeys(
+                    self._SPECKIT_PATH_RE.findall(description)
+                )),
+                completed=task_match.group("done") in ("x", "X"),
+            ))
+
+        if not tasks:
+            raise ValueError(
+                "tasks.md contains no tasks — expected lines like "
+                "'- [ ] T001 [P] [US1] Description with file path'."
+            )
+
+        return tasks
+
+    # =========================================================================
     # LEGACY FORMAT NORMALIZER
     # =========================================================================
 
@@ -845,6 +1133,97 @@ class ContextProvider:
                     return model
 
         return None
+
+
+# =============================================================================
+# SPEC-KIT TASK -> TASK SLICE MAPPING
+# =============================================================================
+
+# Minimal agent-type inference from task file extensions; anything without a
+# clear signal stays "general" (the slicer's richer strategies still apply to
+# the requirements themselves).
+_SPECKIT_AGENT_EXT = {
+    ".py": "backend",
+    ".sql": "backend",
+    ".ts": "frontend",
+    ".tsx": "frontend",
+    ".js": "frontend",
+    ".jsx": "frontend",
+    ".css": "frontend",
+    ".html": "frontend",
+}
+
+
+def _speckit_agent_type(task: Dict) -> str:
+    """Infer a slicer agent type from a task's file paths."""
+    for path_str in task.get("file_paths", []):
+        if path_str.startswith("tests/") or Path(path_str).name.startswith("test_"):
+            return "testing"
+        agent = _SPECKIT_AGENT_EXT.get(Path(path_str).suffix)
+        if agent is not None:
+            return agent
+    return "general"
+
+
+def speckit_tasks_to_slices(spec: NormalizedSpec, job_id: int = 0) -> List[Any]:
+    """Map spec-kit tasks (context_layers.tasks) onto slicer TaskSlice objects.
+
+    Mapping per task line `[ID] [P?] [Story] description + file path`:
+    - ID          -> slice_id ("sk-t001") and requirements/requirement_details id
+    - [P]         -> can_parallelize
+    - [Story]     -> feature (story label, e.g. "US1")
+    - phase order -> depth (phases execute in order; same depth may parallelize)
+    - file paths  -> requirement_details[..]["file_paths"]
+    - sequential tasks (no [P]) -> depends_on chains to the previous task in
+      the same phase, mirroring spec-kit's same-file sequencing rule
+    - completed   -> requirement_details[..]["completed"] (ignored for planning)
+
+    Returns a list of TaskSlice ready for the planning_engine batching.
+    """
+    # Lazy import to avoid a static spec_adapter -> slicer dependency cycle
+    from src.engine.slicer import Slicer, TaskSlice
+
+    slices: List[TaskSlice] = []
+    previous_in_phase: Dict[int, str] = {}
+
+    for task in spec.context_layers.tasks:
+        slice_id = f"sk-{task['task_id'].lower()}"
+        parallel = bool(task.get("parallel", False))
+        phase_index = int(task.get("phase_index", 0))
+
+        depends_on: List[str] = []
+        if not parallel and phase_index in previous_in_phase:
+            depends_on = [previous_in_phase[phase_index]]
+
+        slices.append(TaskSlice(
+            slice_id=slice_id,
+            depth=phase_index,
+            agent_type=_speckit_agent_type(task),
+            requirements=[task["task_id"]],
+            requirement_details=[{
+                "id": task["task_id"],
+                "label": task["description"],
+                "description": task["description"],
+                "story": task.get("story"),
+                "phase": task.get("phase", ""),
+                "file_paths": task.get("file_paths", []),
+                "completed": bool(task.get("completed", False)),
+            }],
+            depends_on=depends_on,
+            can_parallelize=parallel,
+            estimated_tokens=Slicer.TOKENS_PER_REQ,
+            feature=task.get("story"),
+        ))
+        previous_in_phase[phase_index] = slice_id
+
+    logger.info(
+        "speckit_tasks_sliced",
+        job_id=job_id,
+        total_slices=len(slices),
+        parallel_slices=sum(1 for s in slices if s.can_parallelize),
+    )
+
+    return slices
 
 
 # =============================================================================

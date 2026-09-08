@@ -4,9 +4,11 @@ import os
 import sys
 import unittest
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
+# Put the project root on sys.path, not src/ itself: src/secrets.py shadows the
+# stdlib secrets module for the rest of the pytest session once src/ is on the path.
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 
-from services.pipeline_data_sequencer import PipelineDataSequencer
+from src.services.pipeline_data_sequencer import PipelineDataSequencer
 
 
 class TestBasic(unittest.TestCase):

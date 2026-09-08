@@ -81,6 +81,11 @@ def make_orchestrator(max_parallel: int = 3) -> EpicOrchestrator:
     orch.task_executor = MagicMock()
     orch.task_executor.execute_task = AsyncMock(return_value=make_success_result())
     orch._convergence_ran_diff = False  # Phase 28
+    # This helper bypasses __init__, so every attribute the real __init__ sets has to
+    # be mirrored here. EpicOrchestrator.__init__ sets self.db_sync = None and only
+    # replaces it when DBTaskSync imports successfully, so None is the faithful
+    # default: _update_task_status() then skips the live DB write.
+    orch.db_sync = None
     return orch
 
 
