@@ -69,6 +69,69 @@ def render_registry_entry(contract: SpaceContract) -> str:
     return textwrap.indent(body, "  ")
 
 
+def render_capability_entries(contract: SpaceContract) -> str:
+    """Render the space's entries for brain/the_brain/data/capabilities.yaml.
+
+    This is the artefact that makes a declared truth validator run at all.
+    plan_executor only reaches a validator through
+    capability_router.get_capability(hop.capability)["validator"]
+    (plan_executor.py, "Resolve target" block), and that router reads
+    capabilities.yaml. Without an entry here the contract's ground-truth
+    re-query has no first link in the chain.
+
+    Returns "" when no event declares a truth validator, so a read-only
+    space appends nothing.
+    """
+    entries = []
+    for event_name in sorted(contract.events):
+        event = contract.events[event_name]
+        if event.truth is None:
+            continue
+        tool = contract.tool_by_name(event.tool)
+        entry = {
+            "capability": tool.name,
+            "description": (
+                f"{event_name} in the {contract.id} space: "
+                f"{tool.side_effect} via {tool.name}. {contract.description}"
+            ),
+            # No match_patterns: this capability is reached by name from the
+            # hop the space registry routes, not by intent regex. Adding
+            # natural-language patterns is domain work, not something the
+            # contract can derive.
+            "execution_target": (
+                f"mcp:{contract.agent_name}:{mcp_server_name(contract)}:"
+                f"{tool.name}"
+            ),
+        }
+        arg_kwarg = None
+        if event.required_params:
+            arg_kwarg = event.required_params[0]
+        elif tool.params:
+            arg_kwarg = tool.params[0]
+        if arg_kwarg:
+            entry["arg_kwarg"] = arg_kwarg
+        entry["validator"] = {
+            "kind": event.truth.kind,
+            "on_fail": event.truth.on_fail,
+            "postcondition": event.truth.postcondition(),
+        }
+        entries.append(entry)
+
+    if not entries:
+        return ""
+
+    header = "\n".join([
+        f"# --- {contract.id} space (generated from the space contract) ---",
+        "# Reached by name from the hop the space registry routes; the",
+        "# validator block is what turns a declared truth: into an actual",
+        "# world_observer re-query. Do not hand-edit: regenerate instead.",
+        "",
+    ])
+    body = yaml.safe_dump(entries, sort_keys=False, allow_unicode=True,
+                          default_flow_style=False)
+    return header + body
+
+
 def render_agent_manifest(contract: SpaceContract) -> str:
     """Render brain/the_brain/configs/agents/brain-<id>.yaml.
 

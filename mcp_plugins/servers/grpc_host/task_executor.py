@@ -186,6 +186,9 @@ TASK_SKILL_MAPPING: Dict[str, Tuple[str, Optional[str], Optional[str], int]] = {
     "space_mcp_server": ("BashExecutor", None, None, 3),
     "space_electron": ("BashExecutor", None, None, 3),
     "space_tests": ("BashExecutor", None, None, 3),
+    # The capability entry is what carries a contract's truth: validator
+    # to world_observer; without this task the artefact is never written.
+    "space_capability": ("BashExecutor", None, None, 3),
     # Space verification → no agent, no model
     "verify_space_contract": ("BashExecutor", None, None, 3),
     "verify_space_tests": ("BashExecutor", None, None, 3),
@@ -213,6 +216,7 @@ VERIFICATION_COMMANDS: Dict[str, str] = {
     "space_mcp_server": "python -m mcp_plugins.servers.grpc_host.space_cli render mcp-server",
     "space_electron": "python -m mcp_plugins.servers.grpc_host.space_cli render electron",
     "space_tests": "python -m mcp_plugins.servers.grpc_host.space_cli render tests",
+    "space_capability": "python -m mcp_plugins.servers.grpc_host.space_cli render capability",
     # Space verification
     "verify_space_contract": "python -m mcp_plugins.servers.grpc_host.space_cli verify contract",
     "verify_space_tests": "python -m mcp_plugins.servers.grpc_host.space_cli verify tests",

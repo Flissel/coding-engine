@@ -19,6 +19,7 @@ import yaml
 from .space_contract import ContractError, SpaceContract, load_contract
 from .space_renderers import (
     render_agent_manifest,
+    render_capability_entries,
     render_electron_manager,
     render_electron_preload,
     render_mcp_server,
@@ -27,6 +28,8 @@ from .space_renderers import (
 )
 
 REGISTRY_REL = Path("config") / "space_agent_registry.yml"
+CAPABILITIES_REL = (Path("brain") / "the_brain" / "data"
+                    / "capabilities.yaml")
 
 
 def _manifest_path(target: Path, contract: SpaceContract) -> Path:
@@ -163,6 +166,82 @@ def _render_tests(target: Path, contract: SpaceContract) -> int:
     return 0
 
 
+def _render_capabilities(target: Path, contract: SpaceContract) -> int:
+    """Append the space's capability entries to capabilities.yaml.
+
+    Same append-then-verify-then-rollback discipline as the registry: the
+    file is a shared, comment-heavy top-level list, so a parse-and-rewrite
+    would destroy the comments and a blind append can leave it broken.
+    """
+    fragment = render_capability_entries(contract)
+    if not fragment:
+        print(f"space '{contract.id}' declares no truth validators - "
+              f"no capability entries")
+        return 0
+
+    path = target / CAPABILITIES_REL
+    if not path.is_file():
+        print(f"ERROR: capabilities file not found: {path}", file=sys.stderr)
+        return 1
+
+    original_text = path.read_text(encoding="utf-8")
+    existing = yaml.safe_load(original_text) or []
+    if not isinstance(existing, list):
+        print(
+            f"ERROR: capabilities file is not a YAML list: {path}",
+            file=sys.stderr,
+        )
+        return 1
+    known = {
+        e.get("capability") for e in existing if isinstance(e, dict)
+    }
+    wanted = [
+        e["capability"] for e in (yaml.safe_load(fragment) or [])
+    ]
+    clash = sorted(set(wanted) & known)
+    if clash:
+        print(
+            f"ERROR: capability {clash} already exists in {path} - "
+            f"refusing to append a second entry (capability_router takes "
+            f"the first match, so the new one would never be reached)",
+            file=sys.stderr,
+        )
+        return 1
+
+    text = original_text
+    if not text.endswith(chr(10)):
+        text += chr(10)
+    path.write_text(text + chr(10) + fragment, encoding="utf-8")
+
+    try:
+        written = yaml.safe_load(path.read_text(encoding="utf-8")) or []
+        by_name = {
+            e.get("capability"): e
+            for e in written if isinstance(e, dict)
+        }
+        landed = all(
+            isinstance(by_name.get(name), dict)
+            and isinstance(by_name[name].get("validator"), dict)
+            for name in wanted
+        )
+    except Exception:
+        # Cannot confirm the append parsed back - treat as "did not land"
+        # so the rollback runs rather than leaving a shared file broken.
+        landed = False
+
+    if not landed:
+        path.write_text(original_text, encoding="utf-8")
+        print(
+            f"ERROR: capability append for '{contract.id}' did not parse "
+            f"back out of {path} (original file restored)",
+            file=sys.stderr,
+        )
+        return 1
+
+    print(f"added capabilities {wanted} to {path}")
+    return 0
+
+
 def _do_render(artefact: str, target: Path, contract: SpaceContract) -> int:
     if artefact == "registry":
         return _render_registry(target, contract)
@@ -176,8 +255,11 @@ def _do_render(artefact: str, target: Path, contract: SpaceContract) -> int:
         return _render_electron(target, contract)
     if artefact == "tests":
         return _render_tests(target, contract)
+    if artefact == "capability":
+        return _render_capabilities(target, contract)
     if artefact == "all":
-        for step in ("registry", "manifest", "mcp-server", "electron", "tests"):
+        for step in ("registry", "manifest", "mcp-server", "electron",
+                     "tests", "capability"):
             code = _do_render(step, target, contract)
             if code != 0:
                 return code
@@ -246,37 +328,60 @@ def _verify_contract(target: Path, contract: SpaceContract) -> int:
         if not (tests_dir / name).is_file():
             problems.append(f"test missing: {tests_dir / name}")
 
-    # A write event without a truth validator is refused at contract-load
-    # time (space_contract.py's fail-closed rule), but validating the
-    # contract is not the same as the validator actually existing anywhere
-    # downstream: no renderer emits one yet. Without this check, a write
-    # event's ground-truth re-query silently never happens while every
-    # other gate reports green. Filling this in properly (a capabilities
-    # entry per truth kind) is later-wave work; this only makes the gap
-    # loud instead of silent.
+    # A declared truth validator only runs if it reaches world_observer,
+    # and the single path there is capabilities.yaml ->
+    # capability_router.get_capability()["validator"] -> plan_executor's
+    # hop.validator -> CapabilityValidator. An event whose contract
+    # declares truth but whose capability entry is missing or carries a
+    # different postcondition would route with no ground-truth re-query
+    # while every other gate reported green.
     truth_events = {
-        name: event.truth for name, event in contract.events.items()
+        name: event for name, event in contract.events.items()
         if event.truth is not None
     }
     if truth_events:
-        artefact_texts: List[str] = []
-        for path in (registry_path, manifest_path, server_path):
-            if path.is_file():
-                artefact_texts.append(path.read_text(encoding="utf-8"))
-        if tests_dir.is_dir():
-            for test_file in sorted(tests_dir.glob("*.py")):
-                artefact_texts.append(test_file.read_text(encoding="utf-8"))
-        combined = "\n".join(artefact_texts)
-        for name, truth in truth_events.items():
-            if truth.kind not in combined:
-                problems.append(
-                    f"truth validator for '{name}' is declared in the "
-                    f"contract but carried by no generated artefact - "
-                    f"this is a known wave-1 limitation (no renderer "
-                    f"emits truth validators yet, so the write event "
-                    f"would route with no ground-truth re-query), not a "
-                    f"sign of a corrupted space"
-                )
+        cap_path = target / CAPABILITIES_REL
+        if not cap_path.is_file():
+            problems.append(f"capabilities file missing: {cap_path}")
+        else:
+            try:
+                caps = yaml.safe_load(cap_path.read_text(encoding="utf-8"))
+            except yaml.YAMLError as exc:
+                caps = None
+                problems.append(f"capabilities file is not valid YAML: {exc}")
+            by_name = {
+                c.get("capability"): c
+                for c in (caps or []) if isinstance(c, dict)
+            }
+            for name, event in sorted(truth_events.items()):
+                entry = by_name.get(event.tool)
+                if not isinstance(entry, dict):
+                    problems.append(
+                        f"event '{name}' declares a truth validator but "
+                        f"capability '{event.tool}' is not in {cap_path} - "
+                        f"the ground-truth re-query would never run"
+                    )
+                    continue
+                validator = entry.get("validator")
+                if not isinstance(validator, dict):
+                    problems.append(
+                        f"capability '{event.tool}' carries no validator "
+                        f"block, so event '{name}' routes unverified"
+                    )
+                    continue
+                if validator.get("kind") != event.truth.kind:
+                    problems.append(
+                        f"capability '{event.tool}' validator kind "
+                        f"{validator.get('kind')!r} != contract "
+                        f"{event.truth.kind!r}"
+                    )
+                expected_post = event.truth.postcondition()
+                if validator.get("postcondition") != expected_post:
+                    problems.append(
+                        f"capability '{event.tool}' postcondition "
+                        f"{validator.get('postcondition')!r} != contract "
+                        f"{expected_post!r}"
+                    )
 
     if problems:
         for problem in problems:
@@ -344,7 +449,8 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     render = sub.add_parser("render", help="write artefacts")
     render.add_argument("artefact", choices=[
-        "registry", "manifest", "mcp-server", "electron", "tests", "all",
+        "registry", "manifest", "mcp-server", "electron", "tests",
+        "capability", "all",
     ])
     verify = sub.add_parser("verify", help="check artefacts against contract")
     verify.add_argument("check", choices=["contract", "tests", "status"])

@@ -37,10 +37,90 @@ class SpaceTool(BaseModel):
     side_effect: Literal["read", "write"]
 
 
+# The checks world_observer actually implements
+# (vibemind-os/brain/the_brain/core/world_observer.py, dict `_CHECKS`).
+# A kind outside this set names a check that does not exist: the observer
+# would find nothing, return UNVERIFIED, and the write would route with no
+# ground-truth re-query while every gate stayed green.
+SUPPORTED_TRUTH_CHECKS = frozenset({
+    "process_running",
+    "port_open",
+    "file_exists",
+    "http_ok",
+    "supabase_row",
+    "supabase_edge",
+    "supabase_edge_ids",
+    "supabase_node_in_bubble",
+})
+
+# The subset whose postcondition shape this contract can spell. The other
+# five exist in the observer but take spec keys (node titles, bubble ids,
+# edge id lists) that a space contract has no way to supply, so declaring
+# one here is refused rather than rendered into a spec the observer would
+# reject at runtime.
+MODELLED_TRUTH_CHECKS = frozenset({"supabase_row", "http_ok", "file_exists"})
+
+
 class SpaceTruth(BaseModel):
+    """A ground-truth re-query, rendered into the space's capability entry.
+
+    Field sets are per check kind: supabase_row uses table/match/expect,
+    http_ok uses url, file_exists uses path.
+    """
+
     kind: str
+    on_fail: Literal["report", "retry", "block"] = "report"
+    # truth:supabase_row
     table: Optional[str] = None
+    match: Optional[str] = None
     expect: Optional[str] = None
+    # truth:http_ok
+    url: Optional[str] = None
+    # truth:file_exists
+    path: Optional[str] = None
+
+    @property
+    def check(self) -> str:
+        """Bare check name - `_CHECKS` is keyed without the truth: prefix."""
+        return self.kind.split(":", 1)[1]
+
+    def postcondition(self) -> Dict[str, str]:
+        """The spec dict world_observer.observe() consumes."""
+        if self.check == "supabase_row":
+            return {
+                "check": "supabase_row",
+                "table": self.table,
+                "match": self.match,
+                "expect": self.expect or "present",
+            }
+        if self.check == "http_ok":
+            return {"check": "http_ok", "url": self.url}
+        return {"check": "file_exists", "path": self.path}
+
+    @field_validator("kind")
+    @classmethod
+    def _validate_kind(cls, value: str) -> str:
+        if not value.startswith("truth:"):
+            raise ValueError(
+                f"truth kind '{value}' must start with 'truth:' - "
+                f"capability_validator dispatches on that prefix, so "
+                f"without it the check is never reached"
+            )
+        check = value.split(":", 1)[1]
+        if check in MODELLED_TRUTH_CHECKS:
+            return value
+        if check in SUPPORTED_TRUTH_CHECKS:
+            raise ValueError(
+                f"truth kind '{value}' exists in world_observer but its "
+                f"postcondition shape is not modelled here "
+                f"(modelled: {sorted(MODELLED_TRUTH_CHECKS)}) - it needs "
+                f"spec keys a space contract cannot supply"
+            )
+        raise ValueError(
+            f"truth kind '{value}' names no check world_observer "
+            f"implements (available: {sorted(SUPPORTED_TRUTH_CHECKS)}) - "
+            f"the re-query would silently never run"
+        )
 
 
 class SpaceEvent(BaseModel):
@@ -148,6 +228,9 @@ class SpaceContract(BaseModel):
                         f"validator"
                     )
 
+            if event.truth is not None:
+                self._complete_truth(event_name, event.truth, tool)
+
         wired = {e.tool for e in self.events.values()}
         for tool in self.tools:
             if tool.side_effect == "write" and tool.name not in wired:
@@ -159,6 +242,56 @@ class SpaceContract(BaseModel):
             raise ValueError("ui.embed=browserview requires ui.entry_url")
 
         return self
+
+    def _complete_truth(self, event_name: str, truth: SpaceTruth,
+                        tool: SpaceTool) -> None:
+        """Fill in what the contract can derive, refuse what it cannot.
+
+        A postcondition missing its filter is not a smaller check - it is
+        no check: world_observer returns UNVERIFIED for a supabase_row spec
+        without `match`, so the write would route unverified.
+        """
+        check = truth.check
+        if check == "supabase_row":
+            if not truth.table:
+                raise ValueError(
+                    f"event '{event_name}' declares truth:supabase_row "
+                    f"without a table to re-query"
+                )
+            if truth.match is None:
+                if "id" in tool.returns:
+                    # The op returns the row id, so the row can be
+                    # re-queried by it (same pattern as the live
+                    # bubble_create capability).
+                    truth.match = "id=eq.{result_id}"
+                else:
+                    raise ValueError(
+                        f"event '{event_name}' declares truth:supabase_row "
+                        f"but tool '{tool.name}' returns no 'id' "
+                        f"(returns: {sorted(tool.returns)}), so no match "
+                        f"filter can be derived - give truth.match an "
+                        f"explicit PostgREST filter"
+                    )
+            if truth.expect is None:
+                truth.expect = "present"
+            elif truth.expect not in ("present", "absent"):
+                raise ValueError(
+                    f"event '{event_name}' declares truth.expect "
+                    f"'{truth.expect}'; world_observer only understands "
+                    f"'present' and 'absent'"
+                )
+        elif check == "http_ok":
+            if not truth.url:
+                truth.url = (
+                    f"http://127.0.0.1:{self.runtime.port}"
+                    f"{self.runtime.healthz}"
+                )
+        elif check == "file_exists":
+            if not truth.path:
+                raise ValueError(
+                    f"event '{event_name}' declares truth:file_exists "
+                    f"without a path to stat"
+                )
 
 
 def load_contract(path: Path) -> SpaceContract:

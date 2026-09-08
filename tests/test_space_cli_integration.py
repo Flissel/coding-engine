@@ -56,29 +56,32 @@ def target(tmp_path: Path) -> Path:
         REGISTRY_TEXT, encoding="utf-8",
     )
     (tmp_path / "brain" / "the_brain" / "configs" / "agents").mkdir(parents=True)
+    (tmp_path / "brain" / "the_brain" / "data").mkdir(parents=True)
+    (tmp_path / "brain" / "the_brain" / "data" / "capabilities.yaml").write_text(
+        "# capability registry - comments must survive an append\n"
+        "- capability: existing_cap\n"
+        '  description: "an unrelated capability"\n'
+        '  execution_target: "direct:nothing"\n',
+        encoding="utf-8",
+    )
     (tmp_path / "voice" / "electron-app").mkdir(parents=True)
     return tmp_path
 
 
 def test_full_chain_renders_and_verifies(target: Path, capsys):
-    """Every artefact the contract implies gets rendered end-to-end - but
-    the notes fixture declares a write event with a truth validator, and
-    no renderer in this wave carries a truth validator into any generated
-    artefact (FIX 1). So the final gate must still refuse, naming exactly
-    that gap, rather than report "contract satisfied" over a write event
-    with no ground-truth re-query wired up anywhere."""
+    """Every artefact the contract implies gets rendered end-to-end and
+    the final gate accepts the result. The notes fixture declares a
+    write event with a truth validator, so this only passes because the
+    capability entry carrying that validator is rendered too - it is the
+    single path from a contract's truth: to a world_observer re-query."""
     assert main(["render", "all", "--contract", str(FIXTURE),
                  "--target", str(target)]) == 0
     assert main(["verify", "contract", "--contract", str(FIXTURE),
-                 "--target", str(target)]) == 1
+                 "--target", str(target)]) == 0
 
-    err = capsys.readouterr().err
-    assert "truth validator for 'notes.create'" in err
-    assert "carried by no generated artefact" in err
-    # Everything else the contract implies must be in order - the truth
-    # gap must be the *only* reported problem.
-    assert err.count("ERROR:") == 1
-
+    out = capsys.readouterr()
+    assert "contract satisfied: notes" in out.out
+    assert "ERROR:" not in out.err
 
 def test_existing_space_survives_generation(target: Path):
     import yaml

@@ -184,3 +184,110 @@ def test_bundled_fixture_contract_validates():
     create = contract.events["notes.create"]
     assert create.required_provenance == ["approval_ref", "cost_ref"]
     assert create.truth is not None
+
+
+def _write_contract() -> dict:
+    """Valid contract with one write tool carrying full obligations."""
+    raw = _read_only_contract()
+    raw["tools"].append({"name": "notes_create", "params": ["title"],
+                         "returns": {"id": "string"}, "side_effect": "write"})
+    raw["events"]["notes.create"] = {
+        "tool": "notes_create",
+        "required_params": ["title"],
+        "required_provenance": ["approval_ref"],
+        "truth": {"kind": "truth:supabase_row", "table": "notes",
+                  "expect": "present"},
+    }
+    return raw
+
+
+def test_unsupported_truth_kind_is_rejected():
+    """An invented kind passes yaml but never runs: world_observer would find
+    no check by that name, so the write would route unverified while every
+    gate stayed green."""
+    raw = _write_contract()
+    raw["events"]["notes.create"]["truth"]["kind"] = "truth:notes_exist"
+    with pytest.raises(ValidationError, match="supabase_row"):
+        SpaceContract(**raw)
+
+
+def test_truth_kind_without_prefix_is_rejected():
+    raw = _write_contract()
+    raw["events"]["notes.create"]["truth"]["kind"] = "supabase_row"
+    with pytest.raises(ValidationError, match="truth:"):
+        SpaceContract(**raw)
+
+
+def test_modelled_checks_are_accepted():
+    from mcp_plugins.servers.grpc_host.space_contract import (
+        MODELLED_TRUTH_CHECKS,
+    )
+    payloads = {
+        "supabase_row": {"table": "notes", "match": "id=eq.{result_id}"},
+        "http_ok": {"url": "http://127.0.0.1:8140/healthz"},
+        "file_exists": {"path": "/tmp/notes.json"},
+    }
+    assert set(payloads) == set(MODELLED_TRUTH_CHECKS)
+    for check, extra in payloads.items():
+        raw = _write_contract()
+        raw["events"]["notes.create"]["truth"] = dict(
+            kind=f"truth:{check}", **extra
+        )
+        SpaceContract(**raw)  # must not raise
+
+
+def test_supported_but_unmodelled_check_is_refused_by_name():
+    """world_observer has the check, but this contract cannot spell its
+    postcondition - refusing beats emitting a spec the observer rejects."""
+    raw = _write_contract()
+    raw["events"]["notes.create"]["truth"] = {"kind": "truth:supabase_edge_ids"}
+    with pytest.raises(ValidationError, match="not modelled"):
+        SpaceContract(**raw)
+
+
+def test_http_ok_url_is_derived_from_the_runtime_block():
+    raw = _write_contract()
+    raw["events"]["notes.create"]["truth"] = {"kind": "truth:http_ok"}
+    contract = SpaceContract(**raw)
+    truth = contract.events["notes.create"].truth
+    assert truth.url == "http://127.0.0.1:8140/healthz"
+
+
+def test_file_exists_without_path_is_refused():
+    raw = _write_contract()
+    raw["events"]["notes.create"]["truth"] = {"kind": "truth:file_exists"}
+    with pytest.raises(ValidationError, match="path"):
+        SpaceContract(**raw)
+
+
+def test_supabase_row_truth_without_table_is_rejected():
+    raw = _write_contract()
+    del raw["events"]["notes.create"]["truth"]["table"]
+    with pytest.raises(ValidationError, match="table"):
+        SpaceContract(**raw)
+
+
+def test_supabase_row_match_is_derived_from_the_id_return():
+    """The tool returns an id, so the row can be re-queried by it without
+    the contract having to spell out postgrest syntax."""
+    contract = SpaceContract(**_write_contract())
+    assert contract.events["notes.create"].truth.match == "id=eq.{result_id}"
+
+
+def test_supabase_row_without_id_return_requires_an_explicit_match():
+    raw = _write_contract()
+    raw["tools"][1]["returns"] = {"ok": "boolean"}
+    with pytest.raises(ValidationError, match="match"):
+        SpaceContract(**raw)
+
+
+def test_explicit_match_is_kept():
+    raw = _write_contract()
+    raw["events"]["notes.create"]["truth"]["match"] = "title=eq.{result_title}"
+    contract = SpaceContract(**raw)
+    assert contract.events["notes.create"].truth.match == "title=eq.{result_title}"
+
+
+def test_truth_on_fail_defaults_to_report():
+    contract = SpaceContract(**_write_contract())
+    assert contract.events["notes.create"].truth.on_fail == "report"

@@ -18,6 +18,14 @@ def _target(tmp_path: Path) -> Path:
         encoding="utf-8",
     )
     (tmp_path / "brain" / "the_brain" / "configs" / "agents").mkdir(parents=True)
+    (tmp_path / "brain" / "the_brain" / "data").mkdir(parents=True)
+    (tmp_path / "brain" / "the_brain" / "data" / "capabilities.yaml").write_text(
+        "# capability registry\n"
+        "- capability: existing_cap\n"
+        '  description: "an unrelated capability"\n'
+        '  execution_target: "direct:nothing"\n',
+        encoding="utf-8",
+    )
     (tmp_path / "voice" / "electron-app").mkdir(parents=True)
     return tmp_path
 
@@ -226,27 +234,96 @@ def test_verify_contract_fails_when_artefacts_are_missing(tmp_path):
                  "--target", str(target)]) == 1
 
 
-def test_verify_contract_fails_on_uncarried_truth_validator_after_render_all(
+def test_render_all_carries_the_truth_validator_into_capabilities(
     tmp_path, capsys,
 ):
-    """FIX 1: a write event's truth validator is checked by space_contract
-    at load time but no renderer emits it anywhere downstream, so a fully
-    rendered write-event space must still fail verify contract - loudly,
-    and naming the event - rather than reporting "contract satisfied" over
-    a silently missing ground-truth re-query."""
+    """FIX 1 (closed): a write event's truth validator used to be validated
+    at contract-load time and then dropped by every renderer, so the
+    ground-truth re-query never ran while verify reported green. render all
+    must now put it in capabilities.yaml, the only file capability_router
+    reads."""
     target = _target(tmp_path)
     assert main(["render", "all", "--contract", str(FIXTURE),
                  "--target", str(target)]) == 0
     assert main(["verify", "contract", "--contract", str(FIXTURE),
-                 "--target", str(target)]) == 1
+                 "--target", str(target)]) == 0
 
+    caps = yaml.safe_load(
+        (target / "brain" / "the_brain" / "data" / "capabilities.yaml")
+        .read_text(encoding="utf-8")
+    )
+    by_name = {c["capability"]: c for c in caps}
+    # The unrelated capability that was already there must survive.
+    assert "existing_cap" in by_name
+    validator = by_name["notes_create"]["validator"]
+    assert validator["kind"] == "truth:supabase_row"
+    assert validator["postcondition"]["table"] == "notes"
+    assert validator["postcondition"]["match"] == "id=eq.{result_id}"
+
+
+def test_verify_contract_fails_when_the_capability_entry_is_missing(
+    tmp_path, capsys,
+):
+    """Removing the capability again must turn verify red and name the
+    event - otherwise the gap is silent, which is the failure this whole
+    artefact exists to prevent."""
+    target = _target(tmp_path)
+    assert main(["render", "all", "--contract", str(FIXTURE),
+                 "--target", str(target)]) == 0
+    cap_path = target / "brain" / "the_brain" / "data" / "capabilities.yaml"
+    caps = [c for c in yaml.safe_load(cap_path.read_text(encoding="utf-8"))
+            if c["capability"] != "notes_create"]
+    cap_path.write_text(yaml.safe_dump(caps), encoding="utf-8")
+
+    assert main(["verify", "contract", "--contract", str(FIXTURE),
+                 "--target", str(target)]) == 1
     err = capsys.readouterr().err
-    assert "truth validator for 'notes.create'" in err
-    assert "carried by no generated artefact" in err
-    # The message must read as a known, documented limitation of this
-    # wave, not as evidence the generated space is broken/corrupt.
-    assert "wave-1" in err
-    assert "not a" in err and "corrupted space" in err
+    assert "notes.create" in err
+    assert "ground-truth re-query would never run" in err
+
+
+def test_verify_contract_fails_when_the_postcondition_was_edited(
+    tmp_path, capsys,
+):
+    """A capability that exists but re-queries the wrong table is worse
+    than none: it reports verified against something the space never
+    wrote."""
+    target = _target(tmp_path)
+    assert main(["render", "all", "--contract", str(FIXTURE),
+                 "--target", str(target)]) == 0
+    cap_path = target / "brain" / "the_brain" / "data" / "capabilities.yaml"
+    caps = yaml.safe_load(cap_path.read_text(encoding="utf-8"))
+    for cap in caps:
+        if cap["capability"] == "notes_create":
+            cap["validator"]["postcondition"]["table"] = "somewhere_else"
+    cap_path.write_text(yaml.safe_dump(caps), encoding="utf-8")
+
+    assert main(["verify", "contract", "--contract", str(FIXTURE),
+                 "--target", str(target)]) == 1
+    assert "postcondition" in capsys.readouterr().err
+
+
+def test_render_capability_refuses_to_shadow_an_existing_one(
+    tmp_path, capsys,
+):
+    """capability_router returns the first match, so a duplicate entry
+    would never be reached - and the space would look wired while routing
+    through someone else's capability."""
+    target = _target(tmp_path)
+    cap_path = target / "brain" / "the_brain" / "data" / "capabilities.yaml"
+    before = cap_path.read_text(encoding="utf-8")
+    cap_path.write_text(
+        before + "- capability: notes_create\n"
+                 '  description: "someone else already owns this"\n',
+        encoding="utf-8",
+    )
+    original = cap_path.read_text(encoding="utf-8")
+
+    assert main(["render", "capability", "--contract", str(FIXTURE),
+                 "--target", str(target)]) == 1
+    assert "already exists" in capsys.readouterr().err
+    # byte-exact: a refused render must not have touched the file
+    assert cap_path.read_text(encoding="utf-8") == original
 
 
 def test_verify_contract_passes_for_read_only_contract(tmp_path):

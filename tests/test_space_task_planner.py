@@ -17,6 +17,7 @@ def test_plan_covers_every_artefact():
     assert types.count("space_mcp_server") == 1
     assert types.count("space_electron") == 1
     assert types.count("space_tests") == 1
+    assert types.count("space_capability") == 1
     assert "verify_space_contract" in types
     assert "verify_space_tests" in types
     assert "verify_space_status" in types
@@ -108,3 +109,34 @@ def test_verify_space_commands_do_not_call_a_model():
         assert agent == "BashExecutor"
         assert skill is None
         assert claude_agent is None
+
+def test_a_contract_with_truth_gets_a_capability_task():
+    """The capability entry is the only path from a contract's truth:
+    to a world_observer re-query. Without a task for it, an orchestrated
+    run renders every other artefact and the write event routes
+    unverified."""
+    tasks = {t.type: t for t in _tasks()}
+    cap = tasks["space_capability"]
+    assert "brain/the_brain/data/capabilities.yaml" in cap.output_files
+
+
+def test_verification_waits_for_the_capability_task():
+    tasks = {t.type: t for t in _tasks()}
+    cap_id = tasks["space_capability"].id
+    for verify_type in ("verify_space_contract", "verify_space_tests",
+                        "verify_space_status"):
+        assert cap_id in tasks[verify_type].dependencies, (
+            f"{verify_type} would run before the capability entry exists"
+        )
+
+def test_read_only_space_gets_no_capability_task():
+    """Nothing to carry, so no task - a no-op task in the graph would
+    make an orchestrated run look like it wired something it did not."""
+    import yaml
+    from mcp_plugins.servers.grpc_host.space_contract import SpaceContract
+
+    raw = yaml.safe_load(FIXTURE.read_text(encoding="utf-8"))
+    raw["tools"] = [t for t in raw["tools"] if t["side_effect"] == "read"]
+    raw["events"] = {"notes.list": raw["events"]["notes.list"]}
+    types = [t.type for t in plan_space_tasks(SpaceContract(**raw))]
+    assert "space_capability" not in types

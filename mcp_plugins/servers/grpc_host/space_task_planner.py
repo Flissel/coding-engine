@@ -68,6 +68,22 @@ def plan_space_tasks(contract: SpaceContract) -> List[Task]:
 
     build_deps = [registry, manifest, server]
 
+    # Only spaces that declare a truth validator need a capability
+    # entry - same shape as the electron task, which is skipped for a
+    # headless space rather than emitted as a no-op.
+    if any(e.truth is not None for e in contract.events.values()):
+        capability = add(
+            "capability", "space_capability",
+            f"Carry the {sid} truth validators into the capability registry",
+            f"Append one capabilities.yaml entry per {sid} event that "
+            f"declares a truth validator - the only path from the "
+            f"contract's truth: to a world_observer ground-truth "
+            f"re-query.",
+            [registry, manifest],
+            ["brain/the_brain/data/capabilities.yaml"],
+        )
+        build_deps.append(capability)
+
     if contract.ui.embed != "none":
         electron = add(
             "electron", "space_electron",
