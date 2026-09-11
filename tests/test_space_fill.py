@@ -207,7 +207,10 @@ def test_fill_is_a_model_task_not_a_bash_task():
     # Anything that is not one of the special names routes to _execute_claude.
     assert agent not in ("BashExecutor", "CheckpointHandler",
                          "NotificationHandler", "DockerAgent")
-    assert claude_agent
+    # Ein claude_agent wird NICHT verlangt: das entscheidet der
+    # Executor-Typ. .claude/agents/coder.md waere hier sogar falsch
+    # (TypeScript/React/NestJS), also ist None die richtige Angabe.
+    assert skill == "space-tool-implementation"
     assert "space_fill_tool" not in VERIFICATION_COMMANDS
 
     assert TASK_SKILL_MAPPING["verify_space_fill"][0] == "BashExecutor"

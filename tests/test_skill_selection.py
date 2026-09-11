@@ -87,3 +87,12 @@ def test_every_named_skill_in_the_mapping_exists():
         if skill and not (root / ".claude" / "skills" / skill).is_dir()
     })
     assert not missing, f"skills named by the mapping but absent: {missing}"
+
+def test_space_fill_does_not_use_the_typescript_agent():
+    """.claude/agents/coder.md ist fuer "TypeScript, React, or NestJS".
+    Ein Space-Tool ist Python in einem FastMCP-Server - der Agent waere
+    nicht bloss unnoetig, sondern eine falsche Anweisung. Am Live-Lauf
+    2026-09-08 aufgefallen, weil die CLI ihn gar nicht erst fand."""
+    _, skill, claude_agent, _ = TASK_SKILL_MAPPING["space_fill_tool"]
+    assert claude_agent is None
+    assert skill == "space-tool-implementation"

@@ -191,7 +191,11 @@ TASK_SKILL_MAPPING: Dict[str, Tuple[str, Optional[str], Optional[str], int]] = {
     "space_capability": ("BashExecutor", None, None, 3),
     # Fill is the one space task that needs a model: the scaffold leaves
     # NotImplementedError stubs and only domain logic can close them.
-    "space_fill_tool": ("GeneratorAgent", "space-tool-implementation", "coder", 12),
+    # claude_agent bewusst None: .claude/agents/coder.md ist ausdruecklich
+    # fuer "TypeScript, React, or NestJS" geschrieben - fuer ein Python-Tool
+    # eines FastMCP-Servers ist das die falsche Anweisung, nicht bloss eine
+    # fehlende. Der Skill space-tool-implementation traegt die Regeln.
+    "space_fill_tool": ("GeneratorAgent", "space-tool-implementation", None, 12),
     # Space verification → no agent, no model
     "verify_space_fill": ("BashExecutor", None, None, 3),
     "verify_space_contract": ("BashExecutor", None, None, 3),

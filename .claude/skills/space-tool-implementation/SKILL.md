@@ -1,6 +1,6 @@
 ---
 name: space-tool-implementation
-description: Implement one tool of a VibeMind space in its generated FastMCP server, honouring the space contract's read/write, provenance and truth obligations. Use when filling a NotImplementedError stub in spaces/<id>/server.py.
+description: Implement one tool of a VibeMind space in its generated FastMCP server, honouring the space contract's read/write split and making the declared truth re-query findable. Use when filling a NotImplementedError stub in spaces/<id>/server.py.
 ---
 
 # Space-Tool implementieren
@@ -31,17 +31,24 @@ Der Vertrag steht im Kontext. Daraus gilt:
 
 ## Schreibende Tools
 
-Ein schreibendes Tool trägt zwei Pflichten, und beide sind Teil der
-Implementierung, nicht Beiwerk:
+Ein schreibendes Tool trägt zwei Pflichten — aber nur eine davon ist deine.
 
-1. **Provenance.** Das zugehörige Event verlangt Nachweise (etwa
-   `approval_ref`, `cost_ref`). Der Schreibweg muss sie mitführen und
-   ablehnen, wenn sie fehlen — nicht stillschweigend ohne sie schreiben.
-2. **Truth.** Der Vertrag deklariert eine Postcondition, die **unabhängig**
-   nachgelesen wird. Deine Aufgabe ist es, so zu schreiben, dass diese
-   Rückfrage den geschriebenen Zustand auch findet: gibt der Vertrag
-   `match: id=eq.{result_id}` vor, muss die Rückgabe genau dieses `id`
-   enthalten. Die Rückfrage selbst baust du nicht ein — sie läuft anderswo.
+1. **Provenance ist NICHT deine Aufgabe.** Das Event verlangt Nachweise
+   (`approval_ref`, `cost_ref`), und die werden in der Routing-Schicht
+   geprüft, bevor dein Tool überhaupt aufgerufen wird: der Registry-Eintrag
+   muss sie deklarieren, sonst wird das Event gar nicht erst geroutet.
+   **Füge dafür keine Parameter hinzu.** Deine Signatur ist die aus dem
+   Vertrag; ein zusätzliches `approval_ref` würde sie brechen, ohne irgendwo
+   gefüllt zu werden.
+2. **Truth ist deine Aufgabe.** Der Vertrag deklariert eine Postcondition,
+   die **unabhängig** nachgelesen wird. Du baust die Rückfrage nicht ein —
+   sie läuft anderswo. Aber du musst so schreiben und zurückgeben, dass sie
+   den Zustand **findet**: gibt der Vertrag `match: id=eq.{result_id}` vor,
+   muss die Rückgabe genau dieses `id` tragen. Kommt es von der Datenquelle
+   erst mit der Antwort (etwa per `Prefer: return=representation`), hol es
+   dir dort — und brich laut ab, wenn es fehlt. Ohne dieses Feld läuft die
+   Rückfrage ins Leere und meldet „unverifiziert", während der Schreibvorgang
+   erfolgreich aussieht.
 
 ## Verboten
 

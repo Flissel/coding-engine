@@ -33,6 +33,46 @@ CODE_EXTENSIONS = {'.ts', '.tsx', '.js', '.jsx', '.py', '.css', '.html', '.json'
 IGNORE_DIRS = {'node_modules', '.git', '__pycache__', 'dist', 'build', '.next', '.venv', 'venv', '.cache'}
 
 
+def _claude_cli_model() -> Optional[str]:
+    """Das Modell fuer das --model-Flag der Claude-CLI, oder None.
+
+    `config/llm_models.yml` nennt sich Single Source of Truth und hat genau
+    EINEN Schluessel `cli` - laut eigenem Kommentar fuer "Claude CLI / Kilo
+    CLI". Zwei CLIs mit unvereinbaren Modellnamen an einem Schluessel: steht
+    dort ein OpenAI-Modell, bricht die Claude-CLI mit
+    `[claude-code:unrecognized_model]` ab.
+
+    Deshalb wird ein fremdes Modell hier NICHT durchgereicht, sondern das
+    Flag weggelassen. Das Flag ist optional und die CLI benutzt dann das
+    Konto-Standardmodell - nachgemessen am 2026-09-11, ein Lauf ohne
+    --model funktioniert. Fail-soft statt fail-closed ist hier richtig: die
+    Alternative waere, den ganzen Claude-Pfad an einer mitgelieferten
+    Fehlkonfiguration scheitern zu lassen. Sichtbar bleibt sie durch die
+    Warnung.
+    """
+    try:
+        from src.llm_config import get_model
+        cli_model = get_model("cli")
+    except (ImportError, Exception):
+        cli_model = get_settings().cli_model
+
+    if not cli_model:
+        return None
+
+    name = str(cli_model).lower()
+    if "claude" in name or name.startswith("anthropic/"):
+        return cli_model
+
+    logger.warning(
+        "cli_model_ignored_not_a_claude_model",
+        configured=cli_model,
+        reason=("config/llm_models.yml role 'cli' names a model the Claude "
+                "CLI does not know; falling back to the account default. "
+                "Set LLM_MODEL_CLI to a Claude model to pin one."),
+    )
+    return None
+
+
 def _get_claude_executable() -> str:
     """
     Get the Claude CLI executable path.
@@ -290,12 +330,9 @@ class ClaudeCLI:
             if session_id:
                 cmd += f' --resume {session_id}'
 
-            # Model from llm_models.yml (single source of truth)
-            try:
-                from src.llm_config import get_model
-                cli_model = get_model("cli")
-            except (ImportError, Exception):
-                cli_model = get_settings().cli_model
+            # Model from llm_models.yml, but only if it is a Claude model
+            # (see _claude_cli_model).
+            cli_model = _claude_cli_model()
             if cli_model:
                 cmd += f' --model {cli_model}'
 
@@ -1056,11 +1093,7 @@ class ClaudeCLI:
         if session_id:
             cmd_parts.extend(["--resume", session_id])
 
-        try:
-            from src.llm_config import get_model
-            cli_model = get_model("cli")
-        except (ImportError, Exception):
-            cli_model = get_settings().cli_model
+        cli_model = _claude_cli_model()
         if cli_model:
             cmd_parts.extend(["--model", cli_model])
 
