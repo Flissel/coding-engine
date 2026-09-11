@@ -181,6 +181,10 @@ TASK_SKILL_MAPPING: Dict[str, Tuple[str, Optional[str], Optional[str], int]] = {
     # =========================================================================
     # Space Tasks → deterministic renderers (wave 1), LLM fill (wave 2)
     # =========================================================================
+    # Intake ist der zweite Modellpunkt: aus einer Beschreibung wird ein
+    # Vertragsentwurf. claude_agent None aus demselben Grund wie bei
+    # space_fill_tool - coder.md ist fuer TypeScript/React.
+    "space_intake": ("GeneratorAgent", "space-intake", None, 15),
     "space_registry": ("BashExecutor", None, None, 3),
     "space_manifest": ("BashExecutor", None, None, 3),
     "space_mcp_server": ("BashExecutor", None, None, 3),
@@ -197,6 +201,7 @@ TASK_SKILL_MAPPING: Dict[str, Tuple[str, Optional[str], Optional[str], int]] = {
     # fehlende. Der Skill space-tool-implementation traegt die Regeln.
     "space_fill_tool": ("GeneratorAgent", "space-tool-implementation", None, 12),
     # Space verification → no agent, no model
+    "verify_space_intake": ("BashExecutor", None, None, 3),
     "verify_space_fill": ("BashExecutor", None, None, 3),
     "verify_space_contract": ("BashExecutor", None, None, 3),
     "verify_space_tests": ("BashExecutor", None, None, 3),
@@ -226,6 +231,7 @@ VERIFICATION_COMMANDS: Dict[str, str] = {
     "space_tests": "python -m mcp_plugins.servers.grpc_host.space_cli render tests",
     "space_capability": "python -m mcp_plugins.servers.grpc_host.space_cli render capability",
     # Space verification
+    "verify_space_intake": "python -m mcp_plugins.servers.grpc_host.space_cli intake",
     "verify_space_fill": "python -m mcp_plugins.servers.grpc_host.space_cli verify fill",
     "verify_space_contract": "python -m mcp_plugins.servers.grpc_host.space_cli verify contract",
     "verify_space_tests": "python -m mcp_plugins.servers.grpc_host.space_cli verify tests",

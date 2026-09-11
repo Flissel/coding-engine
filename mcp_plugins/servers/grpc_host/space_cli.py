@@ -18,6 +18,7 @@ from typing import Dict, List, Optional
 import yaml
 
 from .space_contract import ContractError, SpaceContract, load_contract
+from .space_intake import analyse_file
 from .space_gap import (
     DEFAULT_MAX_ROUNDS,
     GapError,
@@ -249,6 +250,32 @@ def _render_capabilities(target: Path, contract: SpaceContract) -> int:
 
     print(f"added capabilities {wanted} to {path}")
     return 0
+
+
+def _do_intake(contract_path: Path, target: Optional[Path]) -> int:
+    """Pruefe einen Vertragsentwurf, bevor irgendetwas gerendert wird.
+
+    Absichtlich NICHT ueber load_contract: der Entwurf ist noch keiner. Eine
+    Ausnahme waere hier die falsche Antwort - gefragt ist die Liste dessen,
+    was fehlt, damit der naechste Entwurf besser wird.
+    """
+    result = analyse_file(contract_path, target=target)
+    if result.ok:
+        print(f"contract complete: {result.contract.id}")
+        return 0
+
+    print(f"ERROR: {len(result.gaps)} gap(s) in {contract_path}:",
+          file=sys.stderr)
+    for gap in result.gaps:
+        print(f"  - {gap.as_line()}", file=sys.stderr)
+    if any(gap.field == "contract" for gap in result.gaps):
+        # Der Model-Validator des Vertrags haelt beim ersten Verstoss
+        # an. Ohne diesen Hinweis liest sich "1 gap" wie "nur noch
+        # eine Sache" - und der naechste Entwurf scheitert erneut.
+        # Die Regeln hier ein zweites Mal zu sammeln waere Drift.
+        print("  (further contract rules are only checked once this "
+              "one is fixed)", file=sys.stderr)
+    return 1
 
 
 def _do_gap(target: Path, contract: SpaceContract, round_no: int,
@@ -520,6 +547,13 @@ def main(argv: Optional[List[str]] = None) -> int:
         "registry", "manifest", "mcp-server", "electron", "tests",
         "capability", "all",
     ])
+    intake = sub.add_parser(
+        "intake",
+        help="check a contract draft and name what it still lacks")
+    intake.add_argument("--contract", required=True,
+                        help="path to the draft contract YAML")
+    intake.add_argument("--target", default=None,
+                        help="vibemind-os root; without it no id or prefix claims are checked")
     gap = sub.add_parser(
         "gap", help="contract vs. generated code, and the rework it implies")
     gap.add_argument("--round", type=int, default=1,
@@ -536,6 +570,12 @@ def main(argv: Optional[List[str]] = None) -> int:
                        help="vibemind-os root to write into / check")
 
     args = parser.parse_args(argv)
+
+    if args.command == "intake":
+        return _do_intake(
+            Path(args.contract),
+            Path(args.target) if args.target else None,
+        )
 
     try:
         contract = load_contract(Path(args.contract))
