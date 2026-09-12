@@ -51,13 +51,23 @@ SUPPORTED_TRUTH_CHECKS = frozenset({
     "supabase_edge",
     "supabase_edge_ids",
     "supabase_node_in_bubble",
+    # Seit 2026-09-12: liest eine Zeile aus einem lokalen SQLite-Speicher.
+    # Gebaut, weil `schedule` dorthin schreibt und keiner der anderen acht
+    # Checks das lesen konnte - siehe world_observer._check_sqlite_row.
+    "sqlite_row",
 })
 
-# The subset whose postcondition shape this contract can spell. The other
-# five exist in the observer but take spec keys (node titles, bubble ids,
-# edge id lists) that a space contract has no way to supply, so declaring
-# one here is refused rather than rendered into a spec the observer would
-# reject at runtime.
+# The subset whose postcondition shape this contract can spell. Five of the
+# others take spec keys (node titles, bubble ids, edge id lists) that a space
+# contract has no way to supply, so declaring one here is refused rather than
+# rendered into a spec the observer would reject at runtime.
+#
+# `sqlite_row` is a different case: its shape (table/match/expect plus a path)
+# WOULD be spellable here. It stays unmodelled because no contract needs it
+# yet - schedule, the space it was built for, carries a lean contract that
+# renders nothing. Modelling it means adding path_env/expect_column/
+# expect_value to SpaceTruth; do that when a generated space persists
+# locally, not before.
 MODELLED_TRUTH_CHECKS = frozenset({"supabase_row", "http_ok", "file_exists"})
 
 
