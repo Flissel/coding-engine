@@ -130,6 +130,23 @@ class SpaceEvent(BaseModel):
     truth: Optional[SpaceTruth] = None
 
 
+class SpaceCapabilityClaim(BaseModel):
+    """Der Anspruch eines Space auf eine Capability.
+
+    Traegt absichtlich NUR Name und Schreib-Kennzeichen. Ausfuehrungsziel
+    und Validator stehen in capabilities.yaml; sie hier zu wiederholen
+    hiesse, eine zweite Quelle fuer dieselbe Frage zu schaffen (ADR-0004).
+    Der Vertrag beantwortet genau das, was das System nicht weiss: welche
+    Capability gehoert zu welchem Space.
+    """
+
+    name: str
+    # Kein Vorgabewert: wer den Vertrag schreibt, muss sich festlegen. Eine
+    # geratene Voreinstellung waere die stille Annahme, die spaeter niemand
+    # mehr hinterfragt.
+    writes: bool
+
+
 class SpaceUI(BaseModel):
     embed: Literal["browserview", "none"] = "none"
     entry_url: Optional[str] = None
@@ -158,10 +175,16 @@ class SpaceContract(BaseModel):
     id: str
     description: str
     prefixes: List[str]
-    tools: List[SpaceTool]
-    events: Dict[str, SpaceEvent]
-    ui: SpaceUI
-    runtime: SpaceRuntime
+    # Voller Grad (erzeugte Spaces): eigene Tools, UI, Laufzeit.
+    # Schlanker Grad (bestehende Spaces): nur der Anspruch auf
+    # Capabilities. Welche Gates gelten, ergibt sich daraus, was der
+    # Vertrag deklariert - dasselbe Muster wie beim Electron-Task, der
+    # fuer einen kopflosen Space entfaellt. Siehe ADR-0004.
+    tools: List[SpaceTool] = Field(default_factory=list)
+    events: Dict[str, SpaceEvent] = Field(default_factory=dict)
+    capabilities: List[SpaceCapabilityClaim] = Field(default_factory=list)
+    ui: SpaceUI = Field(default_factory=SpaceUI)
+    runtime: Optional[SpaceRuntime] = None
 
     @property
     def agent_name(self) -> str:
@@ -185,6 +208,44 @@ class SpaceContract(BaseModel):
                 f"unusable in env var names"
             )
         return value
+
+    @property
+    def renders_artefacts(self) -> bool:
+        """Hat dieser Space eigene Artefakte, die erzeugt werden koennen?
+
+        Ein schlanker Vertrag beschreibt einen Space, der ueber fremde
+        Capabilities routet - da gibt es nichts zu rendern. Wer das raten
+        muss, raet irgendwann falsch.
+        """
+        return bool(self.tools)
+
+    @model_validator(mode="after")
+    def _check_degree(self) -> "SpaceContract":
+        """Ein Vertrag muss etwas aussagen, und zwar ganz oder gar nicht."""
+        if not self.tools and not self.capabilities:
+            raise ValueError(
+                "contract declares neither tools nor capabilities - a "
+                "contract that claims nothing cannot be measured against "
+                "anything (ADR-0004)"
+            )
+        if self.runtime is not None and not self.tools:
+            raise ValueError(
+                "runtime is declared without tools: a space with its own "
+                "process also owns the tools it serves. Halbe Formen lassen "
+                "Gates ins Leere laufen - drop runtime, or declare the tools"
+            )
+        if self.ui.embed != "none" and not self.tools:
+            raise ValueError(
+                "ui.embed is declared without tools: a space with its own "
+                "surface also owns the tools behind it"
+            )
+        claimed = [c.name for c in self.capabilities]
+        duplicates = {n for n in claimed if claimed.count(n) > 1}
+        if duplicates:
+            raise ValueError(
+                f"duplicate capability claims: {sorted(duplicates)}"
+            )
+        return self
 
     @model_validator(mode="after")
     def _check_consistency(self) -> "SpaceContract":
@@ -240,6 +301,13 @@ class SpaceContract(BaseModel):
 
         if self.ui.embed == "browserview" and not self.ui.entry_url:
             raise ValueError("ui.embed=browserview requires ui.entry_url")
+
+        if self.tools and self.runtime is None:
+            raise ValueError(
+                "a space with its own tools needs a runtime block: without "
+                "port and healthz there is nothing the status probe could "
+                "ask"
+            )
 
         return self
 

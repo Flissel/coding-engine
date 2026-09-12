@@ -34,6 +34,8 @@ from .space_contract import (
 )
 
 REGISTRY_REL = Path("config") / "space_agent_registry.yml"
+CAPABILITIES_REL = (Path("brain") / "the_brain" / "data"
+                    / "capabilities.yaml")
 
 
 @dataclass(frozen=True)
@@ -96,6 +98,21 @@ _HINTS = (
      "Add ui.entry_url, or set ui.embed: none for a headless space."),
     ("duplicate tool names",
      "Give every tool a distinct name."),
+    ("declares neither tools nor capabilities",
+     "Declare tools (a space with its own artefacts) or capabilities "
+     "(a space that routes through existing ones). A contract that "
+     "claims nothing cannot be measured."),
+    ("needs a runtime block",
+     "Add runtime with port, healthz and start - the status probe has "
+     "nothing to ask otherwise."),
+    ("runtime is declared without tools",
+     "Either declare the tools this space serves, or drop runtime: a "
+     "space with its own process owns its tools."),
+    ("ui.embed is declared without tools",
+     "Either declare the tools behind the surface, or set "
+     "ui.embed: none."),
+    ("duplicate capability claims",
+     "Claim each capability once."),
     ("Field required",
      "Add that field to the contract."),
 )
@@ -109,10 +126,30 @@ def _hint_for(message: str) -> str:
             "states the rule it broke.")
 
 
-def _field_of(error: Dict[str, Any]) -> str:
+# Regeln ueber mehrere Felder wirft pydantic ohne Feldangabe - der Fehler
+# landete dann als "contract". Das bricht das Versprechen des Intake, dass
+# jede Luecke ihr Feld nennt. Diese Zuordnung gibt sie zurueck.
+_MESSAGE_FIELDS = (
+    ("needs a runtime block", "runtime"),
+    ("runtime is declared without tools", "runtime"),
+    ("ui.embed is declared without tools", "ui"),
+    ("requires ui.entry_url", "ui.entry_url"),
+    ("duplicate capability claims", "capabilities"),
+    ("declares neither tools nor capabilities", "tools"),
+    ("duplicate tool names", "tools"),
+    ("has no event bound to it", "events"),
+)
+
+
+def _field_of(error: Dict[str, Any], message: str = "") -> str:
     location = error.get("loc") or ()
     parts = [str(p) for p in location if p != "__root__"]
-    return ".".join(parts) if parts else "contract"
+    if parts:
+        return ".".join(parts)
+    for needle, field in _MESSAGE_FIELDS:
+        if needle in message:
+            return field
+    return "contract"
 
 
 def _contract_gaps(raw: Dict[str, Any]) -> (Optional[SpaceContract], List[Gap]):
@@ -122,8 +159,8 @@ def _contract_gaps(raw: Dict[str, Any]) -> (Optional[SpaceContract], List[Gap]):
         gaps: List[Gap] = []
         for error in exc.errors():
             message = str(error.get("msg", "")).replace("Value error, ", "")
-            gaps.append(Gap(field=_field_of(error), problem=message,
-                            needed=_hint_for(message)))
+            gaps.append(Gap(field=_field_of(error, message),
+                            problem=message, needed=_hint_for(message)))
         return None, gaps
     except TypeError as exc:
         return None, [Gap(field="contract", problem=str(exc),
@@ -157,6 +194,20 @@ def _registry_gaps(contract: SpaceContract, target: Path) -> List[Gap]:
                     needed="Repair the registry before registering a space.")]
 
     gaps: List[Gap] = []
+    if not contract.renders_artefacts:
+        # Ein schlanker Vertrag BESCHREIBT einen bestehenden Space. Dass
+        # seine id vergeben ist, ist dort die Voraussetzung, nicht der
+        # Fehler - und ihr Fehlen ist einer.
+        if contract.id not in spaces:
+            gaps.append(Gap(
+                field="id",
+                problem=f"space id '{contract.id}' is not registered",
+                needed="A contract without own tools describes an existing "
+                       "space - register it first, or declare tools if this "
+                       "is a new one.",
+            ))
+        return gaps
+
     if contract.id in spaces:
         gaps.append(Gap(
             field="id",
@@ -183,6 +234,83 @@ def _registry_gaps(contract: SpaceContract, target: Path) -> List[Gap]:
     return gaps
 
 
+def _capability_gaps(contract: SpaceContract, target: Path) -> List[Gap]:
+    """Der Anspruch des Vertrags gegen die Wirklichkeit in capabilities.yaml.
+
+    Der Vertrag nennt nur Name und Schreib-Kennzeichen (ADR-0004). Alles
+    Weitere steht hier - und genau deshalb kann hier gemessen werden, statt
+    zwei Quellen zu vergleichen:
+
+      * Gibt es die beanspruchte Capability ueberhaupt?
+      * Ist sie stillgelegt?
+      * Hat eine SCHREIBENDE einen unabhaengigen truth:-Validator?
+
+    Die letzte Frage ist der Grund fuer das ganze Feld. Ein Schreibvorgang
+    ohne unabhaengige Rueckfrage meldet Erfolg, ohne dass ihn jemand
+    nachgeprueft hat.
+    """
+    if not contract.capabilities:
+        return []
+
+    path = Path(target) / CAPABILITIES_REL
+    if not path.is_file():
+        return [Gap(
+            field="target",
+            problem=f"capabilities file not found: {path}",
+            needed="Point --target at a vibemind-os checkout; without it the "
+                   "capability claims cannot be checked.",
+        )]
+
+    try:
+        raw = yaml.safe_load(path.read_text(encoding="utf-8")) or []
+    except yaml.YAMLError as exc:
+        return [Gap(field="target",
+                    problem=f"capabilities file is not valid YAML: {exc}",
+                    needed="Repair it before measuring a space against it.")]
+
+    known = {
+        entry["capability"]: entry
+        for entry in raw
+        if isinstance(entry, dict) and entry.get("capability")
+    }
+
+    gaps: List[Gap] = []
+    for claim in contract.capabilities:
+        entry = known.get(claim.name)
+        if entry is None:
+            gaps.append(Gap(
+                field=f"capabilities.{claim.name}",
+                problem=f"capability '{claim.name}' does not exist",
+                needed="Name a capability from capabilities.yaml, or drop "
+                       "the claim.",
+            ))
+            continue
+        if entry.get("enabled") is False:
+            gaps.append(Gap(
+                field=f"capabilities.{claim.name}",
+                problem=f"capability '{claim.name}' is disabled",
+                needed="A disabled capability never routes - drop the claim "
+                       "or enable it.",
+            ))
+            continue
+        if not claim.writes:
+            continue
+        validator = entry.get("validator")
+        kind = (validator or {}).get("kind", "") if isinstance(
+            validator, dict) else str(validator or "")
+        if not str(kind).startswith("truth:"):
+            gaps.append(Gap(
+                field=f"capabilities.{claim.name}",
+                problem=f"capability '{claim.name}' writes but has no "
+                        f"independent truth: validator"
+                        + (f" (has {kind!r})" if kind else ""),
+                needed="Add a truth: validator to that capability in "
+                       "capabilities.yaml - a write whose result is only "
+                       "self-reported cannot be verified.",
+            ))
+    return gaps
+
+
 def analyse(raw: Any, target: Optional[Path] = None) -> IntakeResult:
     """Pruefe einen Vertragsentwurf und benenne, was ihm fehlt.
 
@@ -200,7 +328,8 @@ def analyse(raw: Any, target: Optional[Path] = None) -> IntakeResult:
     if contract is None:
         return IntakeResult(gaps=gaps)
     if target is not None:
-        gaps = _registry_gaps(contract, Path(target))
+        gaps = (_registry_gaps(contract, Path(target))
+                + _capability_gaps(contract, Path(target)))
     return IntakeResult(contract=contract, gaps=gaps)
 
 
