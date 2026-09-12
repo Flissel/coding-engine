@@ -293,6 +293,19 @@ def _capability_gaps(contract: SpaceContract, target: Path) -> List[Gap]:
                        "or enable it.",
             ))
             continue
+        if not entry.get("execution_target"):
+            gaps.append(Gap(
+                field=f"capabilities.{claim.name}",
+                problem=f"capability '{claim.name}' has no execution target "
+                        f"- it matches intent but cannot run",
+                needed="This is often deliberate: a write capability without "
+                       "a real implementation had its target removed so an "
+                       "honest gap gets reported instead of a fake success "
+                       "(see bubble_noop_op, 2026-07-14). Keep the claim to "
+                       "record the gap, or drop it if the capability is "
+                       "obsolete.",
+            ))
+            continue
         if not claim.writes:
             continue
         validator = entry.get("validator")

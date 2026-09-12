@@ -137,3 +137,29 @@ def test_writes_must_be_stated_not_guessed():
     raw["capabilities"] = [{"name": "idea_add"}]
     with pytest.raises(ValidationError, match="writes"):
         SpaceContract(**raw)
+
+def test_a_capability_without_a_target_is_reported(tmp_path):
+    """Ein zielloses Ausfuehrungsziel heisst: die Capability passt auf
+    eine Absicht, kann sie aber nicht ausfuehren. Oft Absicht - bei
+    Schreib-Capabilities ohne echte Umsetzung wurde das Ziel bewusst
+    entfernt, damit eine ehrliche Luecke gemeldet wird statt eines
+    erfundenen Erfolgs (bubble_noop_op, 2026-07-14). Gemeldet werden
+    muss es trotzdem - es IST die Luecke."""
+    from mcp_plugins.servers.grpc_host.space_intake import analyse
+
+    (tmp_path / "config").mkdir(parents=True)
+    (tmp_path / "config" / "space_agent_registry.yml").write_text(
+        "spaces:\n  demo:\n    agent: brain-demo\n",
+        encoding="utf-8")
+    caps = tmp_path / "brain" / "the_brain" / "data"
+    caps.mkdir(parents=True)
+    (caps / "capabilities.yaml").write_text(
+        "- capability: demo_wipe\n  description: x\n",
+        encoding="utf-8")
+    result = analyse({
+        "id": "demo", "description": "d", "prefixes": ["demo."],
+        "capabilities": [{"name": "demo_wipe", "writes": True}],
+    }, target=tmp_path)
+    text = " ".join(g.problem for g in result.gaps)
+    assert "no execution target" in text
+    assert "demo_wipe" in text
