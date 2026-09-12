@@ -18,6 +18,7 @@ from typing import Dict, List, Optional
 import yaml
 
 from .space_contract import ContractError, SpaceContract, load_contract
+from .space_draft import draft, unattributed
 from .space_intake import analyse_file
 from .space_gap import (
     DEFAULT_MAX_ROUNDS,
@@ -249,6 +250,41 @@ def _render_capabilities(target: Path, contract: SpaceContract) -> int:
         return 1
 
     print(f"added capabilities {wanted} to {path}")
+    return 0
+
+
+def _do_draft(space_id: Optional[str], target: Path,
+              show_unattributed: bool) -> int:
+    """Entwurf eines schlanken Vertrags - ein Vorschlag, kein Befund."""
+    if show_unattributed:
+        rows = unattributed(target)
+        if not rows:
+            print("every enabled capability matches some space prefix")
+            return 0
+        print(f"{len(rows)} capabilities match no space prefix:")
+        for name, target_str in rows:
+            print(f"  {name}  ->  {target_str}")
+        # Kein Fehler: das ist ein Befund, keine Verletzung. Wer daraus eine
+        # Luecke macht, muss erst entscheiden, ob jede Capability zu einem
+        # Space gehoeren MUSS - das ist heute nicht so.
+        return 0
+
+    if not space_id:
+        print("ERROR: --space is required unless --unattributed is given",
+              file=sys.stderr)
+        return 1
+    try:
+        text, open_ones = draft(space_id, target)
+    except KeyError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    print(text)
+    if open_ones:
+        print(f"# {len(open_ones)} open: writes could not be derived from the "
+              f"execution target.", file=sys.stderr)
+        for name in open_ones:
+            print(f"#   {name}", file=sys.stderr)
+        return 1
     return 0
 
 
@@ -547,6 +583,15 @@ def main(argv: Optional[List[str]] = None) -> int:
         "registry", "manifest", "mcp-server", "electron", "tests",
         "capability", "all",
     ])
+    draft_p = sub.add_parser(
+        "draft",
+        help="propose a lean contract for an existing space")
+    draft_p.add_argument("--space", default=None,
+                         help="space id from the registry")
+    draft_p.add_argument("--target", required=True,
+                         help="vibemind-os root")
+    draft_p.add_argument("--unattributed", action="store_true",
+                         help="list capabilities matching no space")
     intake = sub.add_parser(
         "intake",
         help="check a contract draft and name what it still lacks")
@@ -570,6 +615,9 @@ def main(argv: Optional[List[str]] = None) -> int:
                        help="vibemind-os root to write into / check")
 
     args = parser.parse_args(argv)
+
+    if args.command == "draft":
+        return _do_draft(args.space, Path(args.target), args.unattributed)
 
     if args.command == "intake":
         return _do_intake(
